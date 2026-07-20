@@ -52,6 +52,9 @@ def build_summary(result: dict) -> dict:
         "period_label": result.get("period_label"),
         "period_is_explicit": result.get("period_is_explicit"),
         "total_unit": result["total_unit"],
+        "total_gabungan": result.get("total_gabungan", 0),
+        "total_converted": result.get("total_converted", 0),
+        "total_pending": result.get("total_pending", 0),
         "jumlah_per_source": per_source,
     }
 
@@ -89,10 +92,22 @@ def format_message(result: dict) -> str:
     else:
         mode_label = "Attack List"
 
-    lines = [f"{mode_label}{filter_text}", f"Total unit: {total}"]
+    lines = [f"{mode_label}{filter_text}"]
+    
+    # Menyeragamkan format respons dengan breakdown konversi/pending
+    if not result.get("expired_mode") and "total_converted" in result:
+        gabungan = result["total_gabungan"]
+        conv = result["total_converted"]
+        pend = result["total_pending"]
+        lines.append(f"Total unit: {gabungan:,} ({conv:,} converted, {pend:,} pending)")
+    else:
+        lines.append(f"Total unit: {total:,}")
 
     if total == 0:
-        lines.append("Tidak ada unit attack list untuk filter ini.")
+        if result.get("total_gabungan", 0) > 0:
+            lines.append(f"Tidak ada daftar antrean untuk status '{result.get('status_filter')}'.")
+        else:
+            lines.append("Tidak ada unit attack list untuk filter ini.")
     elif result["units"] is not None and not result["units"].empty:
         lines.append("Lihat tabel di bawah untuk daftar unit.")
     # else: total > 0 tapi DataFrame sengaja dikosongkan (query
@@ -138,5 +153,13 @@ def _format_all(result: dict) -> str:
         f"  CR7 Aktif      : {result['cr7_total']:,} unit "
         f"({result['cr7_converted']:,} converted, {result['cr7_pending']:,} pending)"
     )
+
+    for src in result.get("other_source_breakdown", []):
+        lines.append(
+            f"  {src['source']:<14}: "
+            f"{src['total']:,} unit "
+            f"({src['converted']:,} converted, "
+            f"{src['pending']:,} pending)"
+        )
 
     return "\n".join(lines)

@@ -118,6 +118,19 @@ class AttackListService(BaseService):
                 "pending": pending,
             })
 
+        other_source_breakdown = []
+        if "source" in df.columns:
+            for source, source_df in df.groupby("source"):
+                if source in ("TCARE", "CRM", "CR7"):
+                    continue
+                converted, pending = _status_split(source_df)
+                other_source_breakdown.append({
+                    "source": source,
+                    "total": len(source_df),
+                    "converted": converted,
+                    "pending": pending,
+                })
+
         return {
             "mode": "all",
             "sa_filter": params.sa_terakhir,
@@ -134,6 +147,7 @@ class AttackListService(BaseService):
             "cr7_total": int(len(cr7_df)),
             "cr7_converted": cr7_converted,
             "cr7_pending": cr7_pending,
+            "other_source_breakdown": other_source_breakdown,
             "raw_df": df.iloc[0:0] if params.wants_summary_only else df,
         }
 
@@ -142,38 +156,53 @@ class AttackListService(BaseService):
         if params.expired_mode:
             period_yyyymm = f"{params.period.tahun:04d}-{params.period.bulan:02d}"
 
-        # Default status='pending' kalau tidak disebut user DAN bukan mode
-        # expired -- persis logika tools/attack_list.py legacy (dikonfirmasi
-        # Wahyu). Mode expired sendiri sudah pakai filter status NOT IN
-        # ('converted','resolved') di repository, jadi tidak perlu default
-        # tambahan di sini.
+        # Default status='pending' kalau tidak disebut user DAN bukan mode expired
         effective_status = params.status
         if not params.expired_mode and effective_status is None:
             effective_status = "pending"
 
-        units_df = self.repo.find(
+        # BUGFIX: Sensitivitas huruf (case-sensitivity) untuk Segment RFM
+        safe_segment = params.segment_rfm.title() if params.segment_rfm else None
+
+        # Tarik data dari DB TANPA filter status agar bisa diagregasi (kecuali expired mode yang punya logic DB khusus)
+        query_status = None if not params.expired_mode else effective_status
+
+        raw_df = self.repo.find(
             source=params.source,
-            status=effective_status,
+            status=query_status,
             sa_terakhir=params.sa_terakhir,
-            segment_rfm=params.segment_rfm,
+            segment_rfm=safe_segment,
             program_id=params.program_id,
             expired_mode=params.expired_mode,
             period_yyyymm=period_yyyymm,
         )
+        
         summary_per_source_df = self.repo.summary_per_source()
+
+        # Hitung agregasi dari raw data untuk ditampilkan di format message
+        total_converted = 0
+        total_pending = 0
+        if not raw_df.empty and "status" in raw_df.columns:
+            total_converted = int((raw_df["status"] == "converted").sum())
+            total_pending = int((raw_df["status"] == "pending").sum())
+
+        # Terapkan filter status menggunakan Pandas untuk membatasi ukuran tabel output (BR026 - Rule 16 Juli)
+        if not params.expired_mode and effective_status:
+            units_df = raw_df[raw_df["status"] == effective_status] if not raw_df.empty else raw_df
+        else:
+            units_df = raw_df
 
         total_unit = int(len(units_df))
 
         # PATCH pola Room 5 (WIP): query "total/berapa/jumlah" tanpa kata
-        # list/daftar/detail/rincian tidak perlu tabel penuh -- DataFrame
-        # dikosongkan (bukan None) supaya tipe tetap konsisten.
+        # list/daftar/detail/rincian tidak perlu tabel penuh
         returned_units_df = units_df.iloc[0:0] if params.wants_summary_only else units_df
 
         return {
             "mode": "list",
             "source_filter": params.source,
             "status_filter": effective_status,
-            "segment_rfm_filter": params.segment_rfm,
+            "segment_rfm_filter": safe_segment,
             "program_id_filter": params.program_id,
             "expired_mode": params.expired_mode,
             "period_yyyymm": period_yyyymm,
@@ -181,6 +210,9 @@ class AttackListService(BaseService):
             "period_is_explicit": params.period.is_explicit if params.expired_mode else None,
             "units": returned_units_df,
             "total_unit": total_unit,
+            "total_gabungan": total_converted + total_pending,
+            "total_converted": total_converted,
+            "total_pending": total_pending,
             "summary_per_source": summary_per_source_df,
             "sa_filter": params.sa_terakhir,
         }

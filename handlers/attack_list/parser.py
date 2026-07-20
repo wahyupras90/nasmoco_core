@@ -101,6 +101,30 @@ SUMMARY_ONLY_KEYWORDS = ("total", "berapa", "jumlah")
 # mewakili niat "tampilkan daftar" dalam Bahasa Indonesia di domain ini.
 LIST_KEYWORDS = ("daftar", "detail", "rincian")
 
+_MONTHS = [
+    "januari", "februari", "maret", "april", "mei", "juni",
+    "juli", "agustus", "september", "oktober", "november", "desember",
+    "jan", "feb", "mar", "apr", "jun", "jul", "agu", "sep", "okt", "nov", "des"
+]
+_MONTHS_REGEX = r"\b(" + "|".join(_MONTHS) + r")\b"
+
+_DYNAMIC_SOURCE_IGNORE_WORDS = set(
+    list(SUMMARY_ONLY_KEYWORDS) +
+    list(LIST_KEYWORDS) +
+    list(_HISTORY_TRIGGER_WORDS) +
+    list(_STATUS_KEYWORDS.keys()) +
+    [sa.lower() for sa in VALID_SA] +
+    _MONTHS +
+    [
+        "expired", "semua", "all", "keseluruhan", "seluruh",
+        "bulan", "ini", "lalu", "depan", "tahun",
+        "tolong", "tampilkan", "kasih", "lihat", "dong", "min",
+        "carikan", "cari", "buat", "bikinkan", "cek", "cekkan", "ya",
+        "dari", "untuk", "data", "yg", "yang", "di", "ke", "ada",
+        "sa", "service", "advisor"  # PENAMBAHAN BUGFIX: Abaikan kata SA sebagai source
+    ]
+)
+
 
 @dataclass
 class AttackListParams(BaseParams):
@@ -133,6 +157,54 @@ def _extract_segment(text_lower: str) -> Optional[str]:
     return None
 
 
+def _extract_dynamic_source(text: str) -> Optional[str]:
+    """Ekstraksi nama source dinamis (PX) dengan pola subtraktif (menghapus
+    semua parameter/keyword yang sudah dikenali sistem). Sisanya dianggap
+    sebagai nama spesifik source. Mendukung nama dengan spasi (mis: 'test program')."""
+    t_lower = text.lower()
+
+    # -1. BUGFIX: Hapus format ISO date (YYYY-MM atau YYYY-MM-DD) agar tidak ditangkap sebagai source PX
+    t_lower = re.sub(r"\b\d{4}-\d{2}(?:-\d{2})?\b", " ", t_lower)
+
+    # 0. Hapus pola kombinasi waktu spesifik yang mengandung angka teks-bulan (Bugfix: "juli 26", "26 juli")
+    t_lower = re.sub(_MONTHS_REGEX + r"\s+\d{2,4}\b", " ", t_lower)
+    t_lower = re.sub(r"\b\d{2,4}\s+" + _MONTHS_REGEX, " ", t_lower)
+
+    # 1. Hapus nilai Program ID (mis: "program 11") dari pencarian
+    t_lower = _PROGRAM_ID_REGEX.sub(" ", t_lower)
+
+    # 2. Hapus frase trigger intent
+    for kw in ATTACK_LIST_KEYWORDS:
+        t_lower = t_lower.replace(kw, " ")
+
+    # 3. Hapus frase whitelist segment
+    for seg in VALID_SEGMENT:
+        t_lower = t_lower.replace(seg, " ")
+
+    # 4. Tokenisasi dan abaikan kata parameter standar / stop-words
+    words = t_lower.split()
+    clean_words = []
+    for w in words:
+        if w in _DYNAMIC_SOURCE_IGNORE_WORDS:
+            continue
+        # Abaikan angka 4 digit yang berdiri sendiri (mencegah tahun ditarik jadi source, 
+        # namun membiarkan string utuh yang menyatu seperti "Recall_Rem_2026").
+        if re.match(r"^20\d{2}$", w):
+            continue
+        clean_words.append(w)
+
+    if not clean_words:
+        return None
+
+    # 5. Pasangkan kembali dengan original teks agar casing/huruf besar-kecil tetap natural (jika ada)
+    pattern = r"\s+".join([re.escape(w) for w in clean_words])
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        return match.group(0).strip()
+        
+    return " ".join(clean_words)
+
+
 class AttackListParser(BaseParser):
 
     def match(self, text: str) -> bool:
@@ -144,10 +216,15 @@ class AttackListParser(BaseParser):
         text_upper = text.upper()
 
         source = None
+        # Evaluasi MAP statis dulu (Prioritas TCARE/CRM/CR7)
         for key, value in _SOURCE_MAP.items():
             if re.search(rf"\b{key}\b", t):
                 source = value
                 break
+        
+        # Jika bukan source statis, ekstraksi sisa teks untuk dinamis (PX)
+        if not source:
+            source = _extract_dynamic_source(text)
 
         status = None
         for key, value in _STATUS_KEYWORDS.items():
