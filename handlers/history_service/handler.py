@@ -91,13 +91,18 @@ class HistoryServiceHandler(BaseHandler):
         history_df = result["history"]
         ro_total = result["ro_total"]
         has_tcare_history = result.get("has_tcare_history", False)
+        identity_source = result.get("identity_source", "customer_profile")
 
         return HandlerResult(
             success=True,
             code=make_code(self.intent_id, SUFFIX_OK),
-            message=formatter.format_message(profile, history_df, ro_total, has_tcare_history),
+            message=formatter.format_message(
+                profile, history_df, ro_total, has_tcare_history, identity_source
+            ),
             dataframe=history_df,
-            summary=formatter.build_summary(profile, history_df, ro_total, has_tcare_history),
+            summary=formatter.build_summary(
+                profile, history_df, ro_total, has_tcare_history, identity_source
+            ),
         )
 
 

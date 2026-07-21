@@ -66,6 +66,19 @@ class TestHistoryServiceHandler(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.code, "INT002_NOT_FOUND")
 
+    def test_execute_ok_via_unitmasuk_fallback_shows_transparency_note(self):
+        """
+        Keputusan Room 0 (Opsi A): customer yang belum ke-ETL ke
+        customer_profile tetap OK lewat fallback unitmasuk, dengan
+        catatan transparansi bahwa RO/segment belum tersedia.
+        """
+        result = self.handler.execute("riwayat service UNTESTED WELL")
+        self.assertTrue(result.success)
+        self.assertEqual(result.code, "INT002_OK")
+        self.assertEqual(result.summary["identity_source"], "unitmasuk_fallback")
+        self.assertIsNone(result.summary["total_visit"])
+        self.assertIn("belum tersedia di data profil resmi", result.message)
+
     def test_execute_ambiguous(self):
         result = self.handler.execute("riwayat service budi")
         self.assertFalse(result.success)

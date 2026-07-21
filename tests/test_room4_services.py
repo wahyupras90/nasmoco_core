@@ -66,6 +66,40 @@ class TestHistoryServiceService(unittest.TestCase):
         result = self.service.execute(params)
         self.assertEqual(result["status"], "not_found")
 
+    def test_name_fallback_to_unitmasuk_when_customer_profile_empty(self):
+        """
+        Keputusan Room 0 (Opsi A): kalau customer_profile 0 hasil untuk
+        pencarian by-nama, fallback ke unitmasuk. Meniru kasus nyata
+        "PT. LONG WELL INTERNATIONAL" (ada di unitmasuk, tidak ada di
+        customer_profile -- lag ETL bulanan yang wajar, bukan data cacat).
+        """
+        params = HistoryServiceParams(
+            customer_identifier="UNTESTED WELL", identifier_type="name"
+        )
+        result = self.service.execute(params)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["profile"]["customer"], "PT UNTESTED WELL SEJAHTERA")
+        self.assertEqual(result["profile"]["no_rangka"], "MHUNTESTED0000001")
+        # BR020/BR026: RO/segment TIDAK dihitung ulang dari unitmasuk,
+        # sengaja None -- bukan cuma hilang diam-diam.
+        self.assertIsNone(result["ro_total"])
+        self.assertIsNone(result["profile"]["segment"])
+        self.assertEqual(result["identity_source"], "unitmasuk_fallback")
+
+    def test_customer_profile_stays_priority_even_if_it_could_also_match_unitmasuk(self):
+        """
+        Keputusan Room 0: customer_profile PRIORITAS MUTLAK -- kalau
+        sudah ada hasil di customer_profile, unitmasuk TIDAK PERNAH
+        dicek sama sekali (walau namanya juga match di unitmasuk).
+        """
+        params = HistoryServiceParams(
+            customer_identifier="MHFXX1JGK000BUDI1", identifier_type="no_rangka"
+        )
+        result = self.service.execute(params)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result.get("identity_source", "customer_profile"), "customer_profile")
+
     def test_revenue_attached_from_rekapbulanan_br003(self):
         params = HistoryServiceParams(
             customer_identifier="MHFXX1JGK000BUDI1", identifier_type="no_rangka"

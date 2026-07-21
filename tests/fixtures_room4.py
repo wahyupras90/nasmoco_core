@@ -357,6 +357,26 @@ def make_temp_db() -> str:
     # itu), tapi riwayat ADA di tcare_schedule_full_history -- Service
     # harus tetap OK (bukan NOT_FOUND).
 
+    # -- Kasus fallback pencarian nama (keputusan Room 0, Opsi A):
+    # "PT UNTESTED WELL SEJAHTERA" ada di unitmasuk (riwayat WO nyata),
+    # tapi SENGAJA TIDAK diberi baris di customer_profile maupun rs --
+    # meniru persis kasus nyata "PT. LONG WELL INTERNATIONAL" yang
+    # ditemukan lewat smoke test (lag ETL bulanan yang wajar).
+    conn.executemany(
+        "INSERT INTO unitmasuk (no_polisi, no_wo, no_invoice, customer, "
+        "no_rangka, model, sa, mech, pekerjaan, klp, kelompok, tanggal, "
+        "tgl_invoice, kategori, tcare) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                "K 9999 UW", 3001, "INV-3001", "PT UNTESTED WELL SEJAHTERA",
+                "MHUNTESTED0000001", "Hilux", "SA07", "MECH4",
+                "Ganti Oli Mesin", "SBE", "SBE",
+                "2024-08-01", "2024-08-01", "Reguler", "N",
+            ),
+        ],
+    )
+
     conn.commit()
     conn.close()
     return path

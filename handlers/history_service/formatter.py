@@ -38,6 +38,7 @@ def build_summary(
     history_df: pd.DataFrame,
     ro_total: Optional[int],
     has_tcare_history: bool = False,
+    identity_source: str = "customer_profile",
 ) -> dict:
     """Ringkasan data terstruktur (ADR019) — bukan teks jadi."""
     return {
@@ -49,6 +50,7 @@ def build_summary(
         "total_visit": ro_total,  # BR020 — dari customer_profile, bukan hitung ulang
         "visit_in_range": _count_unique_visits(history_df),
         "has_tcare_history": has_tcare_history,
+        "identity_source": identity_source,
     }
 
 
@@ -57,14 +59,15 @@ def format_message(
     history_df: pd.DataFrame,
     ro_total: Optional[int],
     has_tcare_history: bool = False,
+    identity_source: str = "customer_profile",
 ) -> str:
     visit_in_range = _count_unique_visits(history_df)
     lines = [
-        f"Riwayat Service — {profile.get('customer', '-')}",
-        f"No Rangka    : {profile.get('no_rangka', '-')}",
-        f"No Polisi    : {profile.get('no_polisi', '-')}",
-        f"Model        : {profile.get('model', '-')}",
-        f"Segment      : {profile.get('segment', '-')}",
+        f"Riwayat Service — {profile.get('customer') or '-'}",
+        f"No Rangka    : {profile.get('no_rangka') or '-'}",
+        f"No Polisi    : {profile.get('no_polisi') or '-'}",
+        f"Model        : {profile.get('model') or '-'}",
+        f"Segment      : {profile.get('segment') or '-'}",
         f"Total RO     : {ro_total if ro_total is not None else '-'}",
         "",
         f"Jumlah kunjungan pada rentang yang diminta: {visit_in_range}",
@@ -76,6 +79,17 @@ def format_message(
         lines.append(
             '💡 Unit ini juga punya data TCARE. Ketik "history tcare '
             f"{profile.get('no_rangka', '')}\" untuk detail lengkap."
+        )
+    if identity_source == "unitmasuk_fallback":
+        # Keputusan Room 0 (Opsi A): profil ini belum ke-ETL ke
+        # customer_profile (lag ETL bulanan yang wajar), jadi RO/segment
+        # tidak tersedia -- kasih tahu user supaya tidak salah kira ini
+        # data lengkap.
+        lines.append("")
+        lines.append(
+            "ℹ️ Profil customer ini belum tersedia di data profil resmi "
+            "(kemungkinan customer baru, menunggu siklus update bulanan). "
+            "Total RO dan Segment di atas belum bisa ditampilkan."
         )
     return "\n".join(lines)
 

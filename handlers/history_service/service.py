@@ -7,6 +7,18 @@ sini, BUKAN di Repository/Handler.
 Alur:
   1. Resolve `customer_identifier` (VIN/plat/nama) -> baris customer_profile.
      0 baris -> NOT_FOUND. >1 baris -> AMBIGUOUS.
+     KHUSUS pencarian by-nama (keputusan Room 0, Opsi A — lihat
+     `PERTANYAAN_ROOM0_FALLBACK_NAMA.md`): kalau `customer_profile`
+     0 hasil, fallback ke pencarian langsung di `unitmasuk`
+     (`find_identity_by_customer_name_in_unitmasuk`). `customer_profile`
+     tetap PRIORITAS MUTLAK — `unitmasuk` HANYA dicoba kalau
+     `customer_profile` benar-benar 0 hasil, tidak pernah digabung.
+     Root cause: lag ETL bulanan yang wajar (customer_profile di-update
+     tiap bulan), bukan data cacat — kejadian rutin, bukan edge case.
+     Profil hasil fallback cuma identitas minimal (customer, no_rangka,
+     model, no_polisi); field yang cuma ada di customer_profile
+     (segment, dealer_kategori, total_kunjungan_fisik) diisi None —
+     BR020/BR026: RO TIDAK dihitung ulang dari unitmasuk.
   2. Ambil riwayat WO dari `unitmasuk` (opsional rentang tanggal). Satu
      baris di `unitmasuk` = satu ITEM PEKERJAAN, bukan satu kunjungan —
      satu WO/kunjungan bisa punya beberapa baris.
@@ -60,6 +72,18 @@ class HistoryServiceService(BaseService):
 
     def execute(self, params: HistoryServiceParams) -> dict:
         profiles = self._resolve_profile(params)
+        used_fallback = False
+
+        # Keputusan Room 0 (Opsi A): fallback ke unitmasuk HANYA untuk
+        # pencarian by-nama, HANYA kalau customer_profile 0 hasil.
+        # customer_profile tetap prioritas mutlak -- kalau sudah ada
+        # hasil (bahkan cuma 1, atau malah >1/AMBIGUOUS), unitmasuk
+        # TIDAK PERNAH dicek sama sekali.
+        if profiles.empty and params.identifier_type == "name":
+            profiles = self.repo.find_identity_by_customer_name_in_unitmasuk(
+                params.customer_identifier
+            )
+            used_fallback = True
 
         if profiles.empty:
             return {"status": "not_found"}
@@ -68,6 +92,16 @@ class HistoryServiceService(BaseService):
             return {"status": "ambiguous", "candidates": profiles}
 
         profile = profiles.iloc[0].to_dict()
+
+        if used_fallback:
+            # Identitas minimal dari unitmasuk -- field yang cuma ada di
+            # customer_profile TIDAK dihitung ulang dari sumber lain
+            # (BR020/BR026), sengaja diisi None supaya eksplisit "tidak
+            # tersedia", bukan cuma hilang diam-diam dari dict.
+            profile.setdefault("segment", None)
+            profile.setdefault("dealer_kategori", None)
+            profile.setdefault("total_kunjungan_fisik", None)
+
         no_rangka = profile["no_rangka"]
 
         history_df = self.repo.get_wo_history(
@@ -77,7 +111,9 @@ class HistoryServiceService(BaseService):
         history_df = self._aggregate_by_wo(history_df)
 
         # BR020: RO WAJIB dari customer_profile.total_kunjungan_fisik,
-        # sudah ada di `profile` (bukan dihitung ulang di sini).
+        # sudah ada di `profile` (bukan dihitung ulang di sini). Kalau
+        # `used_fallback`, ini otomatis None (lihat di atas) -- BUKAN
+        # dihitung ulang dari unitmasuk.
         ro_total = profile.get("total_kunjungan_fisik")
 
         # Notifikasi opsional (disepakati eksplisit dengan user, bukan
@@ -93,6 +129,7 @@ class HistoryServiceService(BaseService):
             "history": history_df,
             "ro_total": ro_total,
             "has_tcare_history": has_tcare_history,
+            "identity_source": "unitmasuk_fallback" if used_fallback else "customer_profile",
         }
 
     def _resolve_profile(self, params: HistoryServiceParams) -> pd.DataFrame:

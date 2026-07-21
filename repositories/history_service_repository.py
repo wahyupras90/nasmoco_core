@@ -125,3 +125,29 @@ class HistoryServiceRepository(BaseRepository):
             "SELECT 1 FROM tcare_schedule_full_history WHERE no_rangka = ?",
             (no_rangka,),
         )
+
+    def find_identity_by_customer_name_in_unitmasuk(self, customer_name: str) -> pd.DataFrame:
+        """
+        Fallback pencarian nama customer LANGSUNG ke `unitmasuk`, dipakai
+        HANYA kalau `customer_profile.get_by_customer_name()` mengembalikan
+        0 hasil (keputusan Room 0: Opsi A -- `customer_profile` tetap
+        prioritas mutlak; `unitmasuk` murni jaring pengaman, tidak pernah
+        digabung/dicek kalau `customer_profile` sudah ada hasil).
+
+        Root cause yang dikonfirmasi Room 0: ini BUKAN data cacat, tapi
+        lag ETL bulanan yang wajar -- `customer_profile` di-update tiap
+        bulan, jadi customer baru "belum ada" sampai siklus ETL
+        berikutnya. Kejadian rutin, bukan edge case langka.
+
+        Mengembalikan identitas MINIMAL (customer, no_rangka, model,
+        no_polisi) -- SATU baris per no_rangka unik (bisa >1 no_rangka
+        untuk nama yang sama, mis. armada). Field profil yang cuma ada
+        di `customer_profile` (segment, dealer_kategori, dst.) TIDAK
+        ada di sini -- itu sengaja diisi None di Service (BR020/BR026:
+        RO tidak dihitung ulang dari unitmasuk).
+        """
+        return self.execute(
+            "SELECT DISTINCT no_rangka, customer, model, no_polisi "
+            "FROM unitmasuk WHERE UPPER(customer) LIKE UPPER(?)",
+            (f"%{customer_name}%",),
+        )
