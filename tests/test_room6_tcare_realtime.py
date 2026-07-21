@@ -260,3 +260,148 @@ def test_formatter_message_includes_all_sections():
     assert "CALYA" in message
     assert "not registered" in message.lower()
     assert "NASMOCO - TEGAL" in message
+
+
+# =====================================================================
+# Pencarian by-nama (brief Wahyu via Room 0, reuse Repository Room 4:
+# CustomerProfileRepository + HistoryServiceRepository -- TIDAK ADA file
+# Room 4 yang diubah untuk fitur ini).
+# =====================================================================
+
+import os
+
+from db.connection import close_connection
+from handlers.tcare_realtime.name_resolver import CustomerNameResolver
+from repositories.customer_profile_repository import CustomerProfileRepository
+from repositories.history_service_repository import HistoryServiceRepository
+from tests.fixtures_room4 import make_temp_db as make_temp_db_room4
+
+
+@pytest.fixture()
+def db_path_room4():
+    path = make_temp_db_room4()
+    yield path
+    close_connection()
+    os.remove(path)
+
+
+@pytest.fixture()
+def name_resolver(db_path_room4):
+    return CustomerNameResolver(
+        CustomerProfileRepository(db_path_room4),
+        HistoryServiceRepository(db_path_room4),
+    )
+
+
+def test_parser_vin_direct_unaffected_by_name_feature():
+    """REGRESI WAJIB: input VIN langsung TIDAK berubah sama sekali oleh
+    fitur pencarian by-nama."""
+    parser = TCARERealtimeParser()
+    parsed = parser.parse("cek tcare realtime MHKA6GK6JSJ084260")
+    assert parsed.vins == ["MHKA6GK6JSJ084260"]
+    assert parsed.customer_name is None
+
+
+def test_parser_detects_customer_name_when_no_vin():
+    parser = TCARERealtimeParser()
+    parsed = parser.parse("history tcare web long well")
+    assert parsed.vins == []
+    assert parsed.customer_name == "long well"
+
+
+def test_name_search_single_match_proceeds_to_web(monkeypatch, name_resolver):
+    """Nama dengan TEPAT 1 kandidat -> lanjut ke alur VIN biasa seperti
+    kalau user ketik VIN langsung, sukses fetch web (di-mock)."""
+    session = FakeSession(vin_pages={"MHFXX1JGK000BUDI1": VIN_FOUND_HTML})
+
+    def factory():
+        return _make_repo(monkeypatch, session)
+
+    handler = TCARERealtimeHandler(
+        service=TCARERealtimeService(repo_factory=factory),
+        name_resolver=name_resolver,
+    )
+    result = handler.execute("history tcare web santoso")
+
+    assert result.success is True
+    assert result.code == "INT013_OK"
+    assert result.summary["berhasil"] == 1
+
+
+def test_name_search_ambiguous_returns_candidate_list_not_web(name_resolver):
+    """Nama dengan >1 kandidat -> AMBIGUOUS, TIDAK lanjut ke web sama
+    sekali (keputusan eksplisit Wahyu -- jangan otomatis pilih satu)."""
+    def factory():
+        raise AssertionError("Web TIDAK BOLEH dipanggil untuk kasus AMBIGUOUS")
+
+    handler = TCARERealtimeHandler(
+        service=TCARERealtimeService(repo_factory=factory),
+        name_resolver=name_resolver,
+    )
+
+    result = handler.execute("history tcare web budi")
+
+    assert result.success is False
+    assert result.code == "INT013_AMBIGUOUS"
+    assert len(result.suggestions) == 2
+    assert "MHFXX1JGK000BUDI1" in result.message
+    assert "MHFXX1JGK000BUDI2" in result.message
+    assert result.suggestions[0]["customer"] == "BUDI SANTOSO"
+    assert result.suggestions[1]["customer"] == "BUDI HARTONO"
+
+
+def test_name_search_not_found_returns_specific_message(name_resolver):
+    handler = TCARERealtimeHandler(name_resolver=name_resolver)
+
+    result = handler.execute("history tcare web namasangattidakada")
+
+    assert result.success is False
+    assert result.code == "INT013_NOT_FOUND"
+    assert "namasangattidakada" in result.message.lower()
+
+
+def test_name_search_uses_unitmasuk_fallback_when_customer_profile_empty(monkeypatch, name_resolver):
+    """Reuse PERSIS pola Room 4 (INT002): customer_profile 0 hasil ->
+    fallback ke unitmasuk. Data uji 'PT UNTESTED WELL SEJAHTERA' sudah
+    ada di fixtures_room4.py (dibuat khusus Room 4 untuk kasus analog
+    ini -- 'PT. LONG WELL INTERNATIONAL')."""
+    session = FakeSession(vin_pages={"MHUNTESTED0000001": VIN_FOUND_HTML})
+
+    def factory():
+        return _make_repo(monkeypatch, session)
+
+    handler = TCARERealtimeHandler(
+        service=TCARERealtimeService(repo_factory=factory),
+        name_resolver=name_resolver,
+    )
+    result = handler.execute("history tcare web untested well")
+
+    assert result.success is True
+    assert result.code == "INT013_OK"
+
+
+def test_name_resolver_prioritizes_customer_profile_over_unitmasuk(name_resolver):
+    """customer_profile PRIORITAS MUTLAK -- kalau sudah ada hasil (BUDI,
+    2 kandidat), unitmasuk TIDAK PERNAH dicek sama sekali."""
+    resolution = name_resolver.resolve("budi")
+    assert resolution.used_fallback is False
+    assert resolution.count == 2
+
+
+def test_vin_regex_requires_mixed_letters_and_digits():
+    """Root cause fix (ditemukan lewat testing fitur pencarian by-nama):
+    kata alfabet murni 5-17 huruf (mis. nama orang seperti 'SANTOSO')
+    TIDAK BOLEH tertangkap sebagai kandidat VIN -- WAJIB campuran
+    huruf+angka, sama seperti pola Room 4 (NO_RANGKA_REGEX). Sebelum fix
+    ini, 'history tcare web santoso' salah mendeteksi 'SANTOSO' sebagai
+    VIN, membuat fitur pencarian by-nama tidak pernah sempat jalan."""
+    parser = TCARERealtimeParser()
+
+    # Nama orang biasa (alfabet murni) -- TIDAK boleh jadi VIN.
+    for name_word in ("SANTOSO", "HARTONO", "WIDODO", "PRATAMA", "SEJAHTERA"):
+        parsed = parser.parse(f"history tcare web {name_word.lower()}")
+        assert parsed.vins == [], f"{name_word!r} salah tertangkap jadi VIN"
+
+    # VIN asli (campuran huruf+angka) TETAP harus terdeteksi.
+    parsed = parser.parse("cek tcare realtime MHKA6GK6JSJ084260")
+    assert parsed.vins == ["MHKA6GK6JSJ084260"]

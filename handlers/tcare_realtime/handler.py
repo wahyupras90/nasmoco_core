@@ -12,15 +12,32 @@ Aturan wajib (brief Room 6, beda dari Handler SQLite biasa):
   error di level Handler -- itu bagian hasil normal (lihat formatter.py),
   karena satu VIN gagal tidak boleh menggagalkan VIN lain yang diminta
   bersamaan.
+
+## Dukungan pencarian by-nama (brief Wahyu via Room 0)
+
+Kalau parser tidak menemukan VIN langsung TAPI menemukan nama customer,
+Handler resolve nama itu dulu (reuse `CustomerNameResolver`, yang reuse
+Repository Room 4 -- lihat `name_resolver.py`) SEBELUM lanjut ke
+WebRepository:
+- 0 kandidat -> NOT_FOUND (pesan spesifik nama, beda dari NOT_FOUND
+  "tidak ada VIN terdeteksi" untuk kasus tidak ada input sama sekali).
+- >1 kandidat -> AMBIGUOUS, tampilkan daftar, TIDAK lanjut ke web TAM
+  sama sekali (keputusan eksplisit Wahyu -- jangan otomatis pilih satu).
+- 1 kandidat -> lanjut ke alur VIN biasa (tidak ada percabangan lagi
+  setelah titik ini, sama seperti kalau user ketik VIN langsung).
+
+Input VIN langsung (perilaku lama) TIDAK berubah sama sekali -- kondisi
+`if parsed.vins:` di awal `execute()` identik dengan sebelum fitur ini.
 """
 
 import pandas as pd
 
 from handlers.tcare_realtime import formatter
+from handlers.tcare_realtime.name_resolver import CustomerNameResolver
 from handlers.tcare_realtime.parser import TCARERealtimeParser
 from handlers.tcare_realtime.service import TCARERealtimeParams, TCARERealtimeService
 from models.base_handler import BaseHandler
-from models.handler_result import HandlerResult, SUFFIX_ERROR, SUFFIX_OK, make_code
+from models.handler_result import HandlerResult, SUFFIX_AMBIGUOUS, SUFFIX_ERROR, SUFFIX_NOT_FOUND, SUFFIX_OK, make_code
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,9 +47,15 @@ class TCARERealtimeHandler(BaseHandler):
     intent_id = "INT013"
     name = "TCARE Realtime"
 
-    def __init__(self, service: TCARERealtimeService = None, parser: TCARERealtimeParser = None):
+    def __init__(
+        self,
+        service: TCARERealtimeService = None,
+        parser: TCARERealtimeParser = None,
+        name_resolver: CustomerNameResolver = None,
+    ):
         self.service = service or TCARERealtimeService()
         self.parser = parser or TCARERealtimeParser()
+        self.name_resolver = name_resolver or CustomerNameResolver()
 
     def match(self, text: str) -> bool:
         return self.parser.match(text)
@@ -40,14 +63,41 @@ class TCARERealtimeHandler(BaseHandler):
     def execute(self, text: str) -> HandlerResult:
         parsed = self.parser.parse(text)
 
-        if not parsed.vins:
+        vins = parsed.vins
+
+        if not vins and parsed.customer_name:
+            # Fitur baru: resolusi by-nama SEBELUM ke WebRepository.
+            resolution = self.name_resolver.resolve(parsed.customer_name)
+
+            if resolution.count == 0:
+                return HandlerResult(
+                    success=False,
+                    code=make_code(self.intent_id, SUFFIX_NOT_FOUND),
+                    message=formatter.format_name_not_found_message(parsed.customer_name),
+                )
+
+            if resolution.count > 1:
+                return HandlerResult(
+                    success=False,
+                    code=make_code(self.intent_id, SUFFIX_AMBIGUOUS),
+                    message=formatter.format_ambiguous_message(
+                        parsed.customer_name, resolution.candidates
+                    ),
+                    suggestions=formatter.build_ambiguous_suggestions(resolution.candidates),
+                )
+
+            # Tepat 1 kandidat -- lanjut ke alur VIN biasa, tidak ada
+            # percabangan lagi setelah titik ini.
+            vins = [resolution.candidates.iloc[0]["no_rangka"]]
+
+        if not vins:
             return HandlerResult(
                 success=False,
-                code=make_code(self.intent_id, "NOT_FOUND"),
+                code=make_code(self.intent_id, SUFFIX_NOT_FOUND),
                 message="Tidak ada nomor rangka/VIN yang terdeteksi pada permintaan ini.",
             )
 
-        service_params = TCARERealtimeParams(vins=parsed.vins)
+        service_params = TCARERealtimeParams(vins=vins)
 
         try:
             results = self.service.execute(service_params)
