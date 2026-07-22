@@ -109,3 +109,25 @@ def test_router_dispatches_to_correct_intent_no_overlap(router):
     assert router.route("kpi detail AGN Januari 2026").code == "INT005_OK"
     assert router.route("ranking revenue Januari 2026").code == "INT006_OK"
     assert router.route("wip").code == "INT007_OK"
+
+
+def test_kpi_summary_month_name_first_not_not_found(router):
+    """
+    BUG 2026-07-22: "kpi juli" sempat NOT_FOUND karena "JULI" diambil
+    sebagai kandidat SA. Sekarang harus OK (periode Juli, tanpa filter SA).
+    """
+    result = router.route("kpi juli")
+    assert result.code == "INT004_OK"
+    assert result.summary["sa"] == "OUTLET (semua SA)"
+
+
+def test_wip_month_name_first_not_treated_as_sa_filter(router):
+    """
+    BUG 2026-07-22: "wip juli" sempat SILENT FAILURE -- "JULI" diambil
+    sebagai SA, hasil kosong (0) tanpa error. Sekarang harus sama dengan
+    "wip" tanpa filter (total_unit_wip == 2, bukan 0).
+    """
+    result = router.route("wip juli")
+    assert result.code == "INT007_OK"
+    assert result.summary["total_unit_wip"] == 2
+    assert result.summary["filter_sa"] is None

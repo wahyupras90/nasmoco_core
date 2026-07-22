@@ -37,6 +37,14 @@ _BULAN_NAMA = {
     "desember": 12, "des": 12, "dec": 12,
 }
 
+# Dipakai sa_parser.py (dan siapa pun yang ekstrak kandidat kode SA) untuk
+# MENGECUALIKAN nama/singkatan bulan dari kandidat SA -- satu sumber
+# kebenaran (BR027), supaya daftar bulan tidak disalin ulang dan berisiko
+# tidak sinkron. Lihat BUG REPORT 2026-07-22: "kpi juli"/"wip juli" sempat
+# salah mengambil "JULI" sebagai kandidat SA karena nama bulan tidak ada
+# di stopword ekstraksi SA.
+MONTH_NAME_TOKENS_UPPER = frozenset(k.upper() for k in _BULAN_NAMA)
+
 # "Januari 2026" / "Jan 2026" / "Juni 26" (tahun 2 ATAU 4 digit)
 _NAMA_BULAN_TAHUN_REGEX = re.compile(
     r"\b(" + "|".join(sorted(_BULAN_NAMA.keys(), key=len, reverse=True)) + r")\s+(\d{2}|\d{4})\b",

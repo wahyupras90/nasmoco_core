@@ -17,17 +17,24 @@ user diperlakukan apa adanya tanpa whitelist).
 import re
 from typing import Optional
 
+from handlers._shared.period_parser import MONTH_NAME_TOKENS_UPPER
+
 OUTLET_KEYWORDS = (
     "outlet", "semua sa", "semua advisor", "keseluruhan", "seluruh sa",
 )
 
 # Kata domain/kata umum yang kebetulan berupa huruf kapital pendek --
-# TIDAK BOLEH dianggap kandidat kode SA.
+# TIDAK BOLEH dianggap kandidat kode SA. Termasuk semua nama/singkatan
+# bulan (BUG 2026-07-22: "kpi juli"/"wip juli" sempat salah mengambil
+# "JULI" sebagai kandidat SA karena token pertama diasumsikan SA tanpa
+# lebih dulu dicek apakah cocok pola periode -- lihat MONTH_NAME_TOKENS_UPPER
+# di period_parser.py, satu sumber kebenaran, bukan daftar bulan terpisah).
 SA_STOPWORDS = {
     "KPI", "SUMMARY", "DETAIL", "HARIAN", "RANKING", "RANK", "WIP",
     "BULAN", "INI", "LALU", "TAHUN", "DAN", "ATAU", "UNTUK", "DARI",
     "TOLONG", "COBA", "CEK", "DONG", "YA", "SIH", "NIH", "OUTLET",
     "TOTAL", "SEMUA", "ADVISOR", "PER", "HARI", "SA",
+    *MONTH_NAME_TOKENS_UPPER,
 }
 
 SA_CANDIDATE_REGEX = re.compile(r"\b[A-Z]{2,6}\b")

@@ -66,6 +66,24 @@ def test_kpi_summary_parse_outlet_keyword_gives_none_sa():
     assert parsed.sa_candidate is None
 
 
+def test_kpi_summary_parse_month_name_first_not_treated_as_sa():
+    """
+    BUG 2026-07-22: "kpi juli" sempat mengambil "JULI" sebagai kandidat
+    SA (NOT_FOUND) karena nama bulan tidak ada di stopword ekstraksi SA
+    dan token pertama diasumsikan SA tanpa dicek pola periode dulu.
+    """
+    assert kpi_summary_parser.parse("kpi juli").sa_candidate is None
+    assert kpi_summary_parser.parse("kpi bulan juli").sa_candidate is None
+    # Urutan kata TIDAK BOLEH mengubah hasil.
+    assert kpi_summary_parser.parse("kpi juli AGN").sa_candidate == "AGN"
+    assert kpi_summary_parser.parse("kpi AGN juli").sa_candidate == "AGN"
+
+
+def test_kpi_detail_parse_month_name_first_not_treated_as_sa():
+    assert kpi_detail_parser.parse("kpi detail juli").sa_candidate is None
+    assert kpi_detail_parser.parse("kpi detail juli AGN").sa_candidate == "AGN"
+
+
 # -- ranking parser --
 
 def test_ranking_match():
@@ -130,3 +148,18 @@ def test_wip_parse_list_keyword_wins_over_summary_only():
 
     parsed2 = wip_parser.parse("list wip SBE")
     assert parsed2.wants_summary_only is False
+
+
+def test_wip_parse_month_name_first_not_treated_as_sa():
+    """
+    BUG 2026-07-22: "wip juli" sempat SILENT FAILURE -- "JULI" diambil
+    sebagai SA (sa_candidate='JULI'), hasil kosong tanpa error karena
+    memang tidak ada SA bernama JULI, padahal user mau filter periode.
+    Perbaikan: nama bulan tidak pernah jadi kandidat SA di posisi mana pun.
+    """
+    parsed = wip_parser.parse("wip juli")
+    assert parsed.sa_candidate is None
+
+    # Urutan kata TIDAK BOLEH mengubah hasil.
+    assert wip_parser.parse("wip juli AGN").sa_candidate == "AGN"
+    assert wip_parser.parse("wip AGN juli").sa_candidate == "AGN"
