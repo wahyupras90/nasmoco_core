@@ -65,7 +65,8 @@ def test_attack_list_tcare_pending_count_excludes_expired(db_path):
 def test_attack_list_find_history_by_bulan(db_path):
     repo = AttackListRepository(db_path)
     df = repo.find_history(bulan="2026-06")
-    assert len(df) == 2
+    # Fixture (INT010): 1 TCARE + 3 CRM (2 program berbeda) di bulan yang sama
+    assert len(df) == 4
 
 
 def test_attack_list_find_history_filters_by_source(db_path):
@@ -73,6 +74,24 @@ def test_attack_list_find_history_filters_by_source(db_path):
     df = repo.find_history(bulan="2026-06", source="TCARE")
     assert len(df) == 1
     assert df.iloc[0]["tgl_konversi"] == "2026-06-15"
+
+
+def test_attack_list_find_history_filters_by_program(db_path):
+    """INT010: filter granular per program CRM, kolom program tersedia
+    di attack_list_history sejak perubahan skema (ALTER TABLE, disepakati
+    Room 0)."""
+    repo = AttackListRepository(db_path)
+    df = repo.find_history(bulan="2026-06", program="Panggil Pulang - At Risk")
+    assert len(df) == 2
+    assert set(df["no_rangka"]) == {"MHCRM00000001", "MHCRM00000003"}
+
+
+def test_attack_list_find_history_combines_source_and_program(db_path):
+    """INT010: source + program dikombinasikan -- filter paling spesifik."""
+    repo = AttackListRepository(db_path)
+    df = repo.find_history(bulan="2026-06", source="CRM", program="Aktivasi New & Potential")
+    assert len(df) == 1
+    assert df.iloc[0]["no_rangka"] == "MHCRM00000004"
 
 
 def test_attack_list_find_expired_mode_filters_by_batas_tcare_month(db_path):

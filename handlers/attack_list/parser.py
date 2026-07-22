@@ -81,7 +81,25 @@ _STATUS_KEYWORDS = {
 
 _HISTORY_TRIGGER_WORDS = ("konversi", "histori", "history")
 
+# INT010: kata "datang" saja terlalu generik (bisa soal WIP/servis lain di
+# luar domain attack list) -- HANYA dianggap trigger history kalau muncul
+# BERSAMA salah satu penanda domain attack list (source/program/kata
+# konversi/frasa attack list itu sendiri). Lihat _wants_history_natural().
+_NATURAL_CONVERSION_WORDS = ("datang",)
+
 EXPIRED_KEYWORD = "expired"
+
+# Whitelist nama program CRM (P1-P4) -- dari attack_list_history.program,
+# dikonfirmasi Wahyu via query langsung ke DB (2026-07). Sama seperti
+# VALID_SA/VALID_SEGMENT: whitelist eksplisit, BUKAN regex generik, supaya
+# tidak salah tangkap kalimat lain (ADR028). Kalau daftar program berubah
+# di marketing_program, whitelist ini perlu diupdate manual (satu titik).
+VALID_PROGRAM = (
+    "panggil pulang - at risk",
+    "panggil pulang - lost",
+    "percepat interval - loyal customer",
+    "aktivasi new & potential",
+)
 
 # Whitelist kode SA -- dikonfirmasi Wahyu (2026-07) masih akurat. Kalau
 # roster SA berubah di masa depan, cukup update daftar ini (satu titik).
@@ -121,7 +139,8 @@ _DYNAMIC_SOURCE_IGNORE_WORDS = set(
         "tolong", "tampilkan", "kasih", "lihat", "dong", "min",
         "carikan", "cari", "buat", "bikinkan", "cek", "cekkan", "ya",
         "dari", "untuk", "data", "yg", "yang", "di", "ke", "ada",
-        "sa", "service", "advisor"  # PENAMBAHAN BUGFIX: Abaikan kata SA sebagai source
+        "sa", "service", "advisor",  # PENAMBAHAN BUGFIX: Abaikan kata SA sebagai source
+        "berapa", "datang", "sudah", "belum",  # INT010: trigger natural, bukan source
     ]
 )
 
@@ -134,6 +153,7 @@ class AttackListParams(BaseParams):
     sa_terakhir: Optional[str] = None
     segment_rfm: Optional[str] = None
     program_id: Optional[int] = None
+    program: Optional[str] = None  # INT010: nama program CRM (VALID_PROGRAM), breakdown history
     period: Optional[ParsedPeriod] = None  # mode=="history" ATAU expired_mode=True
     expired_mode: bool = False
     wants_summary_only: bool = False
@@ -155,6 +175,43 @@ def _extract_segment(text_lower: str) -> Optional[str]:
         if seg in text_lower:
             return seg
     return None
+
+
+def _extract_program(text_lower: str) -> Optional[str]:
+    """Whitelist-based (VALID_PROGRAM) -- sama pola dengan _extract_sa/
+    _extract_segment. Dicek SEBELUM _extract_dynamic_source supaya nama
+    program (yang mengandung spasi & tanda hubung) tidak keburu terpotong
+    jadi source PX asal-asalan."""
+    for prog in VALID_PROGRAM:
+        if prog in text_lower:
+            return prog
+    return None
+
+
+def _wants_history_natural(t: str) -> bool:
+    """INT010: kata "datang" (mis. 'berapa yang datang') dianggap trigger
+    history HANYA kalau muncul bersama penanda domain attack list --
+    source (tcare/crm/cr7), nama program (VALID_PROGRAM), kata konversi
+    itu sendiri, atau frasa attack list. "Berapa yang datang" tanpa
+    konteks itu SENGAJA TIDAK ditangkap (terlalu generik, bisa soal
+    WIP/servis lain -- checklist ADR028).
+
+    BUGFIX: source dicek dengan word-boundary (\\bkey\\b), BUKAN substring
+    biasa -- substring biasa membuat VIN yang mengandung "tcare" sebagai
+    substring (mis. "MHTCARE0000001") salah tertangkap sebagai penanda
+    source, sehingga kalimat riwayat servis biasa ("MHTCARE0000001 kapan
+    terakhir datang service") salah match ke attack_list, padahal harusnya
+    ke history_service/history_tcare. Ditemukan lewat test ADR028
+    checklist eksplisit, bukan asumsi."""
+    if not any(w in t for w in _NATURAL_CONVERSION_WORDS):
+        return False
+    has_domain_context = (
+        any(k in t for k in ATTACK_LIST_KEYWORDS)
+        or any(re.search(rf"\b{key}\b", t) for key in _SOURCE_MAP)
+        or any(prog in t for prog in VALID_PROGRAM)
+        or any(w in t for w in _HISTORY_TRIGGER_WORDS)
+    )
+    return has_domain_context
 
 
 def _extract_dynamic_source(text: str) -> Optional[str]:
@@ -180,6 +237,12 @@ def _extract_dynamic_source(text: str) -> Optional[str]:
     # 3. Hapus frase whitelist segment
     for seg in VALID_SEGMENT:
         t_lower = t_lower.replace(seg, " ")
+
+    # 3b. Hapus frase whitelist nama program CRM (INT010) -- supaya nama
+    # program (mengandung spasi/tanda hubung) tidak salah tertangkap
+    # sebagai nama source PX.
+    for prog in VALID_PROGRAM:
+        t_lower = t_lower.replace(prog, " ")
 
     # 4. Tokenisasi dan abaikan kata parameter standar / stop-words
     words = t_lower.split()
@@ -209,22 +272,45 @@ class AttackListParser(BaseParser):
 
     def match(self, text: str) -> bool:
         t = text.lower()
-        return any(k in t for k in ATTACK_LIST_KEYWORDS)
+        if any(k in t for k in ATTACK_LIST_KEYWORDS):
+            return True
+        # INT010: trigger natural tanpa kata "attack list" -- "konversi
+        # program X", "berapa yang datang dari program Y", dst. Tetap
+        # butuh konteks domain (source/program/kata konversi) supaya
+        # tidak menangkap kalimat umum di luar attack list (ADR028).
+        if any(prog in t for prog in VALID_PROGRAM):
+            return True
+        # BUGFIX: word-boundary, bukan substring -- "MHTCARE0000001"
+        # (VIN) tidak boleh salah tertangkap sebagai penanda source "tcare".
+        if any(w in t for w in _HISTORY_TRIGGER_WORDS) and any(
+            re.search(rf"\b{key}\b", t) for key in _SOURCE_MAP
+        ):
+            return True
+        return _wants_history_natural(t)
 
     def parse(self, text: str) -> AttackListParams:
         t = text.lower()
         text_upper = text.upper()
 
+        # INT010: cek nama program (whitelist) LEBIH DULU. Kalau ketemu,
+        # source CRM tersirat -- jangan panggil _extract_dynamic_source
+        # sama sekali, supaya sisa kata "program" (tanpa angka, lolos dari
+        # _PROGRAM_ID_REGEX) tidak salah tertangkap jadi source PX.
+        program = _extract_program(t)
+
         source = None
-        # Evaluasi MAP statis dulu (Prioritas TCARE/CRM/CR7)
-        for key, value in _SOURCE_MAP.items():
-            if re.search(rf"\b{key}\b", t):
-                source = value
-                break
-        
-        # Jika bukan source statis, ekstraksi sisa teks untuk dinamis (PX)
-        if not source:
-            source = _extract_dynamic_source(text)
+        if program is not None:
+            source = "CRM"
+        else:
+            # Evaluasi MAP statis dulu (Prioritas TCARE/CRM/CR7)
+            for key, value in _SOURCE_MAP.items():
+                if re.search(rf"\b{key}\b", t):
+                    source = value
+                    break
+
+            # Jika bukan source statis, ekstraksi sisa teks untuk dinamis (PX)
+            if not source:
+                source = _extract_dynamic_source(text)
 
         status = None
         for key, value in _STATUS_KEYWORDS.items():
@@ -244,12 +330,21 @@ class AttackListParser(BaseParser):
         if m:
             program_id = int(m.group(1))
 
+        # wants_history sekarang punya DUA jalur:
+        #   1. eksplisit: kata konversi/histori/history + periode eksplisit
+        #      (perilaku lama Room 6, TIDAK berubah)
+        #   2. natural (INT010): sebut nama program (VALID_PROGRAM) secara
+        #      langsung, ATAU kata "datang" + konteks domain -- keduanya
+        #      dianggap niat history meski periode tidak eksplisit
+        #      (default ke bulan berjalan, sama seperti expired_mode)
+        wants_history = wants_history or program is not None or _wants_history_natural(t)
+
         wants_summary_only = any(k in t for k in SUMMARY_ONLY_KEYWORDS) and not any(
             k in t for k in LIST_KEYWORDS
         )
 
         if wants_history:
-            return AttackListParams(mode="history", source=source, period=period)
+            return AttackListParams(mode="history", source=source, program=program, period=period)
 
         return AttackListParams(
             mode="list",

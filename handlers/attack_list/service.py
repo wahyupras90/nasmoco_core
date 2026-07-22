@@ -64,6 +64,7 @@ class AttackListServiceParams:
     sa_terakhir: Optional[str] = None
     segment_rfm: Optional[str] = None
     program_id: Optional[int] = None
+    program: Optional[str] = None  # INT010: filter/breakdown nama program CRM
     period: Optional[ParsedPeriod] = None
     expired_mode: bool = False
     wants_summary_only: bool = False
@@ -118,6 +119,24 @@ class AttackListService(BaseService):
                 "pending": pending,
             })
 
+        # INT010: breakdown per program CRM (P1-P4). Dinamis dari DISTINCT
+        # data (`groupby`), TIDAK hardcode daftar tetap seperti SEGMENT_ORDER
+        # -- sesuai arahan Room 0 (pelajaran bug PX mode "Semua": breakdown
+        # harus otomatis mengikuti data, supaya program baru langsung
+        # kebaca tanpa perlu ubah kode).
+        program_breakdown = []
+        if not crm_df.empty and "program" in crm_df.columns:
+            crm_with_program_df = crm_df[crm_df["program"].notna()]
+            for prog, prog_df in crm_with_program_df.groupby("program"):
+                converted, pending = _status_split(prog_df)
+                program_breakdown.append({
+                    "program": prog,
+                    "total": len(prog_df),
+                    "converted": converted,
+                    "pending": pending,
+                })
+            program_breakdown.sort(key=lambda row: row["program"])
+
         other_source_breakdown = []
         if "source" in df.columns:
             for source, source_df in df.groupby("source"):
@@ -144,6 +163,7 @@ class AttackListService(BaseService):
             "crm_converted": crm_converted,
             "crm_pending": crm_pending,
             "crm_segment_breakdown": segment_breakdown,
+            "crm_program_breakdown": program_breakdown,
             "cr7_total": int(len(cr7_df)),
             "cr7_converted": cr7_converted,
             "cr7_pending": cr7_pending,
@@ -219,11 +239,35 @@ class AttackListService(BaseService):
 
     def _execute_history(self, params: AttackListServiceParams) -> dict:
         bulan_str = f"{params.period.tahun:04d}-{params.period.bulan:02d}"
-        history_df = self.repo.find_history(bulan=bulan_str, source=params.source)
+        # BUGFIX (INT010): sama pola dengan segment_rfm -- whitelist VALID_PROGRAM
+        # di parser disimpan lowercase, tapi nilai asli di DB title-case
+        # ("Panggil Pulang - At Risk"). Tanpa .title() filter tidak akan
+        # pernah match (ditemukan lewat test, bukan asumsi).
+        safe_program = params.program.title() if params.program else None
+        history_df = self.repo.find_history(
+            bulan=bulan_str, source=params.source, program=safe_program,
+        )
 
         total_konversi = 0
         if not history_df.empty and "tgl_konversi" in history_df.columns:
             total_konversi = int(history_df["tgl_konversi"].notna().sum())
+
+        # INT010: breakdown per program -- HANYA relevan untuk baris CRM
+        # (program NULL untuk TCARE/CR7/PX by design). Dinamis dari
+        # DISTINCT data yang ada, TIDAK hardcode daftar P1-P4 (pelajaran
+        # dari bug PX mode "Semua" -- breakdown harus ikut data, bukan
+        # daftar tetap, supaya program baru otomatis kebaca).
+        program_breakdown = []
+        if not history_df.empty and "program" in history_df.columns:
+            crm_history_df = history_df[history_df["program"].notna()]
+            for prog, prog_df in crm_history_df.groupby("program"):
+                prog_konversi = int(prog_df["tgl_konversi"].notna().sum())
+                program_breakdown.append({
+                    "program": prog,
+                    "total": int(len(prog_df)),
+                    "konversi": prog_konversi,
+                })
+            program_breakdown.sort(key=lambda row: row["program"])
 
         return {
             "mode": "history",
@@ -231,7 +275,9 @@ class AttackListService(BaseService):
             "bulan_label": display_period(params.period.tahun, params.period.bulan),
             "period_is_explicit": params.period.is_explicit,
             "source_filter": params.source,
+            "program_filter": safe_program,
             "history": history_df,
             "total_tercatat": int(len(history_df)),
             "total_konversi": total_konversi,
+            "program_breakdown": program_breakdown,
         }

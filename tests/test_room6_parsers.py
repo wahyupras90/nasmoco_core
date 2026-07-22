@@ -73,6 +73,71 @@ def test_attack_list_parse_history_mode_with_explicit_period():
     assert p.period.is_explicit is True
 
 
+# -- INT010: whitelist VALID_PROGRAM & trigger natural --
+
+def test_int010_extract_program_sets_source_crm_automatically():
+    """Nama program (whitelist) terdeteksi -> source otomatis 'CRM',
+    TANPA perlu user sebut kata 'crm' secara eksplisit."""
+    p = parser.parse("konversi program Panggil Pulang - Lost bulan juli")
+    assert p.program == "panggil pulang - lost"
+    assert p.source == "CRM"
+    assert p.mode == "history"
+
+
+def test_int010_program_name_not_leaked_into_dynamic_px_source():
+    """BUGFIX ditemukan saat implementasi: nama program CRM (mengandung
+    spasi & tanda hubung) sempat bocor sebagian ke _extract_dynamic_source
+    dan salah tertangkap sebagai nama source PX. Diperbaiki dengan
+    mengecek whitelist program LEBIH DULU, skip ekstraksi source dinamis
+    kalau program sudah ketemu."""
+    p = parser.parse("berapa yang datang dari program Aktivasi New & Potential")
+    assert p.source == "CRM"
+    assert p.program == "aktivasi new & potential"
+
+
+def test_int010_natural_trigger_datang_requires_domain_context():
+    """'datang' SENDIRIAN (tanpa source/program/kata konversi) TIDAK boleh
+    memicu match() -- terlalu generik, berpotensi salah tangkap query
+    domain lain (ADR028 checklist)."""
+    assert parser.match("berapa yang datang") is False
+    assert parser.match("berapa yang datang bulan ini") is False
+    assert parser.match("mobil pelanggan sudah datang belum ya") is False
+
+
+def test_int010_natural_trigger_datang_with_source_matches():
+    """'datang' + source eksplisit (tcare/crm/cr7) dianggap niat history
+    natural, walau tidak ada kata 'attack list' atau 'konversi'."""
+    assert parser.match("berapa yang datang dari tcare bulan ini") is True
+    p = parser.parse("berapa yang datang dari tcare bulan ini")
+    assert p.mode == "history"
+    assert p.source == "TCARE"
+
+
+def test_int010_dynamic_px_source_unaffected_by_program_whitelist():
+    """Regresi negatif: ekstraksi source dinamis PX (nama custom dari
+    Excel) tetap bekerja seperti sebelumnya -- whitelist program CRM
+    tidak mengganggu jalur ini sama sekali kalau program tidak disebut."""
+    p = parser.parse("attack list Recall_Rem_2026")
+    assert p.source == "Recall_Rem_2026"
+    assert p.program is None
+    assert p.mode == "list"
+
+
+def test_int010_source_check_uses_word_boundary_not_substring():
+    """Permintaan verifikasi eksplisit Room 0 (ADR028 checklist, kasus
+    lintas-domain): source (tcare/crm/cr7) di trigger natural HARUS dicek
+    word-boundary, BUKAN substring biasa.
+
+    BUG DITEMUKAN & DIPERBAIKI: sebelum fix, VIN yang mengandung kata
+    "tcare" sebagai substring (mis. "MHTCARE0000001") membuat kalimat
+    riwayat servis biasa salah match ke attack_list -- padahal domainnya
+    History Service/History TCARE, bukan attack list/konversi sama
+    sekali. Kalimat ini TIDAK boleh match, supaya tidak "mencuri" query
+    dari history_service/history_tcare (checklist wajib ADR028)."""
+    assert parser.match("MHTCARE0000001 kapan terakhir datang service") is False
+    assert parser.match("customer ini kapan terakhir datang service?") is False
+
+
 def test_attack_list_parse_sa_whitelist_ignores_non_sa_words():
     """Bug ditemukan sebelumnya: kata 'yg' (singkatan 'yang') salah
     tertangkap sebagai kode SA lewat regex generik. Diperbaiki dengan

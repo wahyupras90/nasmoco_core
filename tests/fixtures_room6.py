@@ -63,7 +63,8 @@ def make_temp_db() -> str:
             no_rangka TEXT,
             tgl_konversi TEXT,
             bulan_konversi TEXT,
-            segment_rfm TEXT
+            segment_rfm TEXT,
+            program TEXT
         );
 
         CREATE TABLE tcare_web_vehicle (
@@ -117,12 +118,21 @@ def make_temp_db() -> str:
     )
 
     # -- attack_list_history: histori konversi bulan Juni 2026 --
+    # Baris CRM (id=2) sengaja punya `program` terisi -- skema production
+    # tidak pernah NULL untuk source=CRM (dikonfirmasi Wahyu via query
+    # langsung, 0 rows NULL), jadi fixture ikut konsisten.
+    #
+    # Baris id=3,4 (bulan sama, program BEDA) ditambahkan khusus untuk
+    # INT010 -- uji breakdown per program dalam satu bulan/source yang
+    # sama (Panggil Pulang - At Risk vs Aktivasi New & Potential).
     conn.executemany(
         "INSERT INTO attack_list_history (id, bulan, source, no_rangka, "
-        "tgl_konversi, bulan_konversi, segment_rfm) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "tgl_konversi, bulan_konversi, segment_rfm, program) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (1, "2026-06", "TCARE", "MHTCARE0000001", "2026-06-15", "2026-06", "Champions"),
-            (2, "2026-06", "CRM", "MHCRM00000001", None, None, "At Risk"),
+            (1, "2026-06", "TCARE", "MHTCARE0000001", "2026-06-15", "2026-06", "Champions", None),
+            (2, "2026-06", "CRM", "MHCRM00000001", None, None, "At Risk", "Panggil Pulang - At Risk"),
+            (3, "2026-06", "CRM", "MHCRM00000003", "2026-06-20", "2026-06", "At Risk", "Panggil Pulang - At Risk"),
+            (4, "2026-06", "CRM", "MHCRM00000004", None, None, "New", "Aktivasi New & Potential"),
         ],
     )
 

@@ -160,12 +160,24 @@ class AttackListRepository(BaseRepository):
         """
         return self.execute(sql, [bulan_batas])
 
-    def find_history(self, bulan: str, source: Optional[str] = None) -> pd.DataFrame:
+    def find_history(
+        self,
+        bulan: str,
+        source: Optional[str] = None,
+        program: Optional[str] = None,
+    ) -> pd.DataFrame:
         """Baca attack_list_history untuk statistik konversi per bulan.
 
         Dipakai kalau user tanya mis. 'berapa unit attack list bulan lalu
         sudah konversi' -- HANYA baca kolom status yang sudah dihitung
         evaluator_konversi.py, tidak menghitung ulang (BR026).
+
+        `program` (INT010): filter granular untuk breakdown per program
+        CRM (P1-P4). Kolom `program` di attack_list_history NULL untuk
+        source TCARE/CR7/PX (tidak granular by design, dikonfirmasi Room 0)
+        -- filter ini hanya bermakna kalau dikombinasikan dengan
+        source="CRM" atau dibiarkan tanpa source sekaligus sebut nama
+        program (nama program CRM unik, tidak overlap TCARE/CR7/PX).
         """
         conditions = ["bulan = ?"]
         params: list = [bulan]
@@ -173,6 +185,10 @@ class AttackListRepository(BaseRepository):
         if source is not None:
             conditions.append("source = ?")
             params.append(source)
+
+        if program is not None:
+            conditions.append("program = ?")
+            params.append(program)
 
         sql = f"""
             SELECT *

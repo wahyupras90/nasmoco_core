@@ -124,8 +124,116 @@ def test_attack_list_handler_history_mode(router):
     result = router.route("attack list konversi bulan 2026-06")
     assert result.code == "INT008_OK"
     assert result.summary["mode"] == "history"
+    # Fixture (INT010): 4 baris bulan 2026-06 (1 TCARE + 3 CRM, 2 program beda)
+    assert result.summary["total_tercatat"] == 4
+    assert result.summary["total_konversi"] == 2
+
+
+# -- INT010: breakdown/filter per program CRM --
+
+def test_int010_history_program_breakdown_dynamic(router):
+    """Mode history TANPA filter program -> breakdown per program CRM
+    otomatis (dinamis, DISTINCT dari data), bukan hardcode daftar tetap."""
+    result = router.route("attack list konversi bulan 2026-06")
+    breakdown = result.summary["program_breakdown"]
+    programs = {row["program"] for row in breakdown}
+    assert programs == {"Panggil Pulang - At Risk", "Aktivasi New & Potential"}
+    # Panggil Pulang - At Risk: 2 baris (id=2 pending, id=3 converted)
+    pp_at_risk = next(r for r in breakdown if r["program"] == "Panggil Pulang - At Risk")
+    assert pp_at_risk["total"] == 2
+    assert pp_at_risk["konversi"] == 1
+
+
+def test_int010_history_filter_program_spesifik(router):
+    """Sebut nama program eksplisit -> trigger mode history natural (TANPA
+    kata 'attack list'/'konversi' sama sekali), hasil terfilter ke program
+    itu saja, source otomatis CRM."""
+    result = router.route(
+        "berapa yang datang dari program Aktivasi New & Potential bulan 2026-06"
+    )
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "history"
+    assert result.summary["filter_program"] == "Aktivasi New & Potential"
+    assert result.summary["filter_source"] == "CRM"
+    assert result.summary["total_tercatat"] == 1
+
+
+def test_int010_natural_trigger_konversi_program_without_attack_list_keyword(router):
+    """'konversi program X' (tanpa kata 'attack list') tetap harus match
+    dan masuk mode history -- kebutuhan trigger natural INT010."""
+    result = router.route(
+        "konversi program Panggil Pulang - At Risk bulan 2026-06"
+    )
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "history"
     assert result.summary["total_tercatat"] == 2
-    assert result.summary["total_konversi"] == 1
+
+
+def test_int010_generic_datang_without_domain_context_not_matched(router):
+    """Regresi negatif eksplisit (ADR028): 'berapa yang datang' SENDIRIAN
+    tanpa konteks domain attack list (source/program/kata konversi) TIDAK
+    boleh match handler ini -- terlalu generik, bisa jadi soal domain lain
+    (mis. WIP/servis)."""
+    handler = AttackListHandler()
+    assert handler.match("berapa yang datang") is False
+    assert handler.match("berapa yang datang bulan ini") is False
+
+
+def test_int010_datang_cross_domain_not_stolen_from_history_handlers(router):
+    """Permintaan verifikasi eksplisit Room 0 (bukan cuma 'tanpa konteks'
+    -- kasus LINTAS-DOMAIN yang lebih rawan): kalimat "datang" milik
+    domain History Service/TCARE, TIDAK boleh dicuri attack_list.
+
+    BUG DITEMUKAN & DIPERBAIKI lewat verifikasi ini: source (tcare/crm/cr7)
+    di _wants_history_natural() dan match() sempat dicek dengan substring
+    biasa (`key in t`), bukan word-boundary (`\\bkey\\b`) -- akibatnya VIN
+    yang mengandung "tcare" sebagai substring (mis. "MHTCARE0000001") salah
+    tertangkap sebagai penanda source, membuat kalimat riwayat servis biasa
+    salah match ke attack_list padahal harusnya ke history_service/
+    history_tcare. Diperbaiki dengan re.search(r"\\bkey\\b", ...)."""
+    handler = AttackListHandler()
+    # VIN mengandung "tcare" sebagai substring -- HARUS TETAP tidak match,
+    # ini kalimat riwayat servis biasa, bukan soal attack list/konversi.
+    assert handler.match("MHTCARE0000001 kapan terakhir datang service") is False
+    assert handler.match("customer ini kapan terakhir datang service?") is False
+    assert handler.match("kapan mobil ini datang ke bengkel") is False
+
+
+def test_int010_all_mode_program_breakdown_dynamic(router):
+    """Mode resume-semua (source tidak disebut) -> breakdown per program
+    CRM ikut ditampilkan (dinamis, DISTINCT dari data attack_list)."""
+    result = router.route("attack list")
+    assert result.summary["mode"] == "all"
+    breakdown = result.summary["crm_program_breakdown"]
+    programs = {row["program"] for row in breakdown}
+    # Fixture attack_list dasar: program_id 11 -> program "PROG B" (2 baris)
+    assert "PROG B" in programs
+    prog_b = next(r for r in breakdown if r["program"] == "PROG B")
+    assert prog_b["total"] == 2
+    assert prog_b["converted"] == 1
+    assert prog_b["pending"] == 1
+
+
+def test_int010_list_mode_not_affected_by_program_changes(router):
+    """Regresi negatif: mode 'list' biasa (source eksplisit, TANPA sebut
+    program) TIDAK terpengaruh perubahan INT010 -- perilaku identik
+    dengan sebelum patch."""
+    result = router.route("attack list tcare")
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "list"
+    assert result.summary["total_unit"] == 1
+    assert result.summary["filter_status"] == "pending"
+
+
+def test_int010_px_source_not_confused_with_program_name(router):
+    """Regresi negatif: nama source PX custom (mis. hasil ekstraksi dinamis)
+    tetap berfungsi seperti biasa, tidak tertukar dengan whitelist program
+    CRM -- keduanya jalur ekstraksi yang terpisah."""
+    handler = AttackListHandler()
+    parsed = handler.parser.parse("attack list Recall_Rem_2026")
+    assert parsed.source == "Recall_Rem_2026"
+    assert parsed.program is None
+    assert parsed.mode == "list"
 
 
 def test_attack_list_handler_not_matched_by_unrelated_text(router):

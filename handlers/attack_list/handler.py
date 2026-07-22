@@ -38,6 +38,7 @@ class AttackListHandler(BaseHandler):
             sa_terakhir=parsed.sa_terakhir,
             segment_rfm=parsed.segment_rfm,
             program_id=parsed.program_id,
+            program=parsed.program,
             period=parsed.period,
             expired_mode=parsed.expired_mode,
             wants_summary_only=parsed.wants_summary_only,

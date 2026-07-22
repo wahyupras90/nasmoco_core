@@ -11,8 +11,10 @@ def build_summary(result: dict) -> dict:
             "bulan_label": result["bulan_label"],
             "periode_diasumsikan": not result["period_is_explicit"],
             "filter_source": result.get("source_filter"),
+            "filter_program": result.get("program_filter"),
             "total_tercatat": result["total_tercatat"],
             "total_konversi": result["total_konversi"],
+            "program_breakdown": result.get("program_breakdown", []),
         }
 
     if result["mode"] == "all":
@@ -28,6 +30,7 @@ def build_summary(result: dict) -> dict:
             "crm_total": result["crm_total"],
             "crm_converted": result["crm_converted"],
             "crm_pending": result["crm_pending"],
+            "crm_program_breakdown": result.get("crm_program_breakdown", []),
             "cr7_total": result["cr7_total"],
             "cr7_converted": result["cr7_converted"],
             "cr7_pending": result["cr7_pending"],
@@ -70,6 +73,16 @@ def format_message(result: dict) -> str:
         ]
         if result.get("source_filter"):
             lines.append(f"Filter source: {result['source_filter']}")
+        if result.get("program_filter"):
+            lines.append(f"Filter program: {result['program_filter']}")
+        # INT010: breakdown per program CRM (dinamis, DISTINCT dari data)
+        program_breakdown = result.get("program_breakdown") or []
+        if program_breakdown:
+            lines.append("Breakdown per program CRM:")
+            for row in program_breakdown:
+                lines.append(
+                    f"  - {row['program']}: {row['konversi']}/{row['total']} konversi"
+                )
         return "\n".join(lines)
 
     if result["mode"] == "all":
@@ -148,6 +161,16 @@ def _format_all(result: dict) -> str:
             f"    {seg['segment']:<18} : {seg['total']:,} "
             f"({seg['converted']:,} converted, {seg['pending']:,} pending)"
         )
+
+    # INT010: breakdown per program CRM (P1-P4), dinamis dari data
+    program_breakdown = result.get("crm_program_breakdown") or []
+    if program_breakdown:
+        lines.append("  CRM per Program:")
+        for prog in program_breakdown:
+            lines.append(
+                f"    {prog['program']:<35}: {prog['total']:,} "
+                f"({prog['converted']:,} converted, {prog['pending']:,} pending)"
+            )
 
     lines.append(
         f"  CR7 Aktif      : {result['cr7_total']:,} unit "
