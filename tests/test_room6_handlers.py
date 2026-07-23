@@ -302,17 +302,22 @@ def test_attack_list_all_mode_triggered_when_source_not_specified(router):
 
 
 def test_attack_list_all_mode_correct_numbers(router):
-    """Fixture: TCARE 1 pending (MHTCARE0000001); CRM 1 pending
-    (MHCRM00000001, At Risk) + 1 converted (MHCRM00000002, At Risk);
-    CR7 1 pending (MHCR700000001)."""
+    """TCARE unit/pekerjaan sekarang dari `tcare_schedule` (BUKAN
+    `attack_list` lagi -- fix bug "pekerjaan selalu=unit", 2026-07-22):
+    MHTCARE0000001 + MHTCARE0000002 pending (2 unit, 2 pekerjaan --
+    kebetulan 1:1 di fixture ini karena masing-masing cuma 1 baris
+    jadwal, BUKAN karena source-nya attack_list); MHTCARE0000004
+    converted (1 unit, 1 pekerjaan). CRM 1 pending (MHCRM00000001, At
+    Risk) + 1 converted (MHCRM00000002, At Risk); CR7 1 pending
+    (MHCR700000001)."""
     result = router.route("attack list")
     s = result.summary
     assert s["mode"] == "all"
 
-    assert s["tcare_unit_pending"] == 1
-    assert s["tcare_pekerjaan_pending"] == 1
-    assert s["tcare_unit_converted"] == 0
-    assert s["tcare_pekerjaan_converted"] == 0
+    assert s["tcare_unit_pending"] == 2
+    assert s["tcare_pekerjaan_pending"] == 2
+    assert s["tcare_unit_converted"] == 1
+    assert s["tcare_pekerjaan_converted"] == 1
 
     assert s["crm_total"] == 2
     assert s["crm_converted"] == 1
@@ -398,11 +403,83 @@ def test_attack_list_all_mode_summary_only_empties_dataframe(router):
     assert result.dataframe.empty
 
     # Angka summary tetap tersedia walaupun dataframe dikosongkan.
-    assert result.summary["tcare_unit_pending"] == 1
+    assert result.summary["tcare_unit_pending"] == 2
     assert result.summary["crm_total"] == 2
     assert result.summary["cr7_total"] == 1
 
 
+@pytest.fixture()
+def db_path_with_multi_pekerjaan_unit(db_path):
+    """Tambahan KHUSUS: 1 no_rangka TCARE dengan 2 baris jadwal pending
+    sekaligus (10K + 20K) -- untuk membuktikan fix bug "pekerjaan
+    selalu=unit" (2026-07-22). TIDAK mengubah fixtures_room6.py, insert
+    langsung ke temp DB yang sudah ada."""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO unit_tcare (no_rangka, sa_terakhir) VALUES (?, ?)",
+        ("MHMULTIPEKERJAAN01", "AGN"),
+    )
+    conn.executemany(
+        "INSERT INTO tcare_schedule (no_rangka, bulan_jadwal, bulan_realisasi, expired) "
+        "VALUES (?, ?, ?, ?)",
+        [
+            ("MHMULTIPEKERJAAN01", "2025-09", None, 0),  # 20K, masih pending
+            ("MHMULTIPEKERJAAN01", "2026-03", None, 0),  # 30K, masih pending juga
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return db_path
 
 
+@pytest.fixture()
+def router_with_multi_pekerjaan(db_path_with_multi_pekerjaan_unit):
+    r = Router(fallback=NullFallbackProvider())
+    r.register(
+        AttackListHandler(AttackListService(AttackListRepository(db_path_with_multi_pekerjaan_unit))),
+        priority=10,
+    )
+    return r
 
+
+def test_attack_list_all_mode_tcare_pekerjaan_can_exceed_unit(router_with_multi_pekerjaan):
+    """BUKTI UTAMA fix bug 'pekerjaan selalu=unit' (2026-07-22, contoh
+    nyata Wahyu: no_rangka JF1ZD8K72RG010081 dengan 20K+30K pending
+    sekaligus). 1 no_rangka dengan 2 baris jadwal pending -> pekerjaan
+    (3) HARUS lebih besar dari unit (3, karena 2 unit lain di fixture
+    dasar cuma 1 baris masing-masing) -- total unit tetap 3 (2 dari
+    fixture dasar + 1 baru), tapi pekerjaan jadi 4 (2+1+1, karena unit
+    baru menyumbang 2 baris)."""
+    result = router_with_multi_pekerjaan.route("attack list")
+    s = result.summary
+
+    # 3 unit unik (MHTCARE0000001, MHTCARE0000002, MHMULTIPEKERJAAN01)
+    assert s["tcare_unit_pending"] == 3
+    # TAPI 4 baris jadwal (1 + 1 + 2) -- pekerjaan > unit, BUKAN 1:1 lagi.
+    assert s["tcare_pekerjaan_pending"] == 4
+    assert s["tcare_pekerjaan_pending"] > s["tcare_unit_pending"]
+
+
+def test_attack_list_all_mode_uses_period_from_query_not_today(router):
+    """FIX (2026-07-23, ditemukan Wahyu): sebelumnya `_execute_all_summary()`
+    SELALU pakai `datetime.now()` untuk bulan_batas, mengabaikan periode
+    yang diminta user ("juli"). Fixture: MHTCARE0000004 realisasi persis
+    di 2026-07-10 -- HARUS kebaca sebagai converted kalau user minta
+    'juli' (match persis), TAPI HARUS 0 kalau user minta bulan lain
+    (mis. 'agustus') karena realisasinya bukan di bulan itu."""
+    result_juli = router.route("attack list juli 2026")
+    assert result_juli.summary["tcare_unit_converted"] == 1
+
+    result_agustus = router.route("attack list agustus 2026")
+    assert result_agustus.summary["tcare_unit_converted"] == 0
+
+
+def test_attack_list_all_mode_converted_not_cumulative_across_months(router):
+    """REVISI (2026-07-23): 'converted' TIDAK BOLEH kumulatif (bulan_jadwal
+    <= periode) -- harus match PERSIS bulan realisasi. MHTCARE0000001
+    (bulan_jadwal 2026-07, TAPI belum direalisasi -- masih pending)
+    TIDAK BOLEH ikut dihitung sebagai converted di bulan manapun."""
+    result = router.route("attack list juli 2026")
+    # Cuma MHTCARE0000004 yang converted (realisasi persis Juli) --
+    # MHTCARE0000001/0000002 (keduanya masih pending) TIDAK ikut.
+    assert result.summary["tcare_unit_converted"] == 1

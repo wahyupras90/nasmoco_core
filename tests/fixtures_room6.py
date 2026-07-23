@@ -98,8 +98,12 @@ def make_temp_db() -> str:
         );
 
         -- Substitusi VIEW unit_tcare (ADR024) untuk keperluan test JOIN.
+        -- Kolom sa_terakhir WAJIB ada (skema asli, dikonfirmasi Room 4
+        -- lewat get_unit_info()) -- dipakai tcare_pending_count()/
+        -- tcare_converted_count() untuk filter SA konsisten (ADR027 Bug#1).
         CREATE TABLE unit_tcare (
-            no_rangka TEXT
+            no_rangka TEXT,
+            sa_terakhir TEXT
         );
         """
     )
@@ -155,7 +159,11 @@ def make_temp_db() -> str:
         ("MHERROR000000001", "Timeout saat scraping"),
     )
 
-    # -- tcare_schedule + unit_tcare: untuk tcare_pending_count --
+    # -- tcare_schedule + unit_tcare: untuk tcare_pending_count/tcare_converted_count --
+    # MHTCARE0000004 (BARU): baris yang SUDAH direalisasi (bulan_realisasi
+    # terisi) -- dipakai test tcare_converted_count(), sebelumnya tidak
+    # ada satupun baris converted di fixture ini (gap ditemukan lewat
+    # bug report "TCARE pekerjaan selalu=unit", 2026-07-22).
     conn.executemany(
         "INSERT INTO tcare_schedule (no_rangka, bulan_jadwal, bulan_realisasi, expired) "
         "VALUES (?, ?, ?, ?)",
@@ -163,11 +171,17 @@ def make_temp_db() -> str:
             ("MHTCARE0000001", "2026-07", None, 0),
             ("MHTCARE0000002", "2026-06", None, 0),
             ("MHTCARE0000003", "2026-01", None, 1),  # expired, tidak boleh terhitung
+            ("MHTCARE0000004", "2026-07", "2026-07", 0),  # SUDAH direalisasi -> converted (format YYYY-MM, sama seperti data asli)
         ],
     )
     conn.executemany(
-        "INSERT INTO unit_tcare (no_rangka) VALUES (?)",
-        [("MHTCARE0000001",), ("MHTCARE0000002",), ("MHTCARE0000003",)],
+        "INSERT INTO unit_tcare (no_rangka, sa_terakhir) VALUES (?, ?)",
+        [
+            ("MHTCARE0000001", "AGN"),
+            ("MHTCARE0000002", "BUD"),
+            ("MHTCARE0000003", "AGN"),
+            ("MHTCARE0000004", "AGN"),
+        ],
     )
 
     conn.commit()

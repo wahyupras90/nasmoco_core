@@ -144,21 +144,80 @@ class AttackListRepository(BaseRepository):
         """
         return self.execute(sql, params)
 
-    def tcare_pending_count(self, bulan_batas: str) -> pd.DataFrame:
+    def tcare_pending_count(self, bulan_batas: str, sa_terakhir: Optional[str] = None) -> pd.DataFrame:
         """Hitung TCARE-pending count untuk Attack List.
 
         Per konfirmasi Room 0: JOIN ke tcare_schedule (subset aktif, ~3,544
         kendaraan), BUKAN tcare_schedule_full_history -- beda sengaja dari
         INT002/INT003 karena Attack List hanya relevan untuk unit yang masih
         aktif follow-up-nya (ADR024, klarifikasi Room 6).
+
+        `sa_terakhir`: filter opsional -- WAJIB didukung supaya konsisten
+        dengan kategori lain (CRM/CR7) di view "Attack List Semua"
+        (ADR027 Bug#1: bug legacy dulu filter SA cuma jalan di CRM/CR7,
+        TCARE Pending diabaikan -- jangan sampai regresi lagi di sini).
         """
-        sql = """
+        conditions = ["ts.bulan_jadwal <= ?", "ts.bulan_realisasi IS NULL", "ts.expired = 0"]
+        params: list = [bulan_batas]
+        if sa_terakhir is not None:
+            conditions.append("ut.sa_terakhir = ?")
+            params.append(sa_terakhir)
+
+        sql = f"""
             SELECT COUNT(DISTINCT ts.no_rangka) AS unit, COUNT(*) AS pekerjaan
             FROM tcare_schedule ts
             JOIN unit_tcare ut ON ts.no_rangka = ut.no_rangka
-            WHERE ts.bulan_jadwal <= ? AND ts.bulan_realisasi IS NULL AND ts.expired = 0
+            WHERE {' AND '.join(conditions)}
         """
-        return self.execute(sql, [bulan_batas])
+        return self.execute(sql, params)
+
+    def tcare_converted_count(self, bulan_target: str, sa_terakhir: Optional[str] = None) -> pd.DataFrame:
+        """Hitung TCARE-converted count -- pasangan `tcare_pending_count()`,
+        sumber SAMA (`tcare_schedule`, BUKAN `attack_list`).
+
+        Ditambahkan setelah ditemukan bug (2026-07-22): view "Attack List
+        Semua" sebelumnya menghitung unit/pekerjaan TCARE dari tabel
+        `attack_list` (yang sudah di-dedup 1 baris/unit oleh ETL), membuat
+        `unit == pekerjaan` SELALU -- padahal 1 unit bisa punya beberapa
+        baris jadwal (`pekerjaan`) sekaligus jatuh tempo (mis. 10K + 20K).
+        Definisi benar (dikonfirmasi Wahyu): "pekerjaan" = sisa jadwal
+        service yang JATUH TEMPO (`bulan_jadwal <= hari ini`), dihitung
+        dari `tcare_schedule`, bukan dari `attack_list`.
+
+        REVISI (2026-07-23, bug ditemukan Wahyu, KEDUA KALI): definisi
+        "converted" versi sebelumnya pakai
+        `strftime('%Y-%m', ts.bulan_realisasi) = bulan_target` -- SELALU
+        gagal (return 0) terhadap data ASLI, karena `bulan_realisasi`
+        ternyata SUDAH tersimpan dalam format `"YYYY-MM"` (mis. "2024-05"),
+        BUKAN `"YYYY-MM-DD"` seperti asumsi awal. `strftime()` SQLite
+        butuh minimal format tanggal lengkap (`YYYY-MM-DD`) untuk bisa
+        parsing -- input `"YYYY-MM"` saja bikin `strftime()` gagal total
+        (return NULL untuk SEMUA baris, dikonfirmasi lewat query
+        diagnostik: 12.478 dari 12.478 baris gagal di-parse).
+
+        Fix: `bulan_realisasi` SUDAH dalam format target yang benar,
+        TIDAK PERLU `strftime()` sama sekali -- cukup perbandingan
+        string langsung (`=`), persis seperti `bulan_jadwal` di
+        `tcare_pending_count()`.
+
+        `expired` SENGAJA TIDAK dicek di sini (beda dari `tcare_pending_count`)
+        -- dikonfirmasi Wahyu: "expired" itu kategori TERPISAH ("hangus",
+        bukan converted maupun pending). Kalau `bulan_realisasi` sudah
+        terisi, itu SUDAH converted, terlepas dari nilai `expired`.
+        """
+        conditions = ["ts.bulan_realisasi = ?"]
+        params: list = [bulan_target]
+        if sa_terakhir is not None:
+            conditions.append("ut.sa_terakhir = ?")
+            params.append(sa_terakhir)
+
+        sql = f"""
+            SELECT COUNT(DISTINCT ts.no_rangka) AS unit, COUNT(*) AS pekerjaan
+            FROM tcare_schedule ts
+            JOIN unit_tcare ut ON ts.no_rangka = ut.no_rangka
+            WHERE {' AND '.join(conditions)}
+        """
+        return self.execute(sql, params)
 
     def find_history(
         self,

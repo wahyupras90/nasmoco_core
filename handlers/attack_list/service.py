@@ -42,6 +42,7 @@ Keputusan final (dikonfirmasi eksplisit):
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd
@@ -96,9 +97,25 @@ class AttackListService(BaseService):
             pending = int((sub_df["status"] == "pending").sum()) if not sub_df.empty else 0
             return converted, pending
 
-        tcare_df = df[df["source"] == "TCARE"] if not df.empty else df
-        tcare_pending_df = tcare_df[tcare_df["status"] == "pending"] if not tcare_df.empty else tcare_df
-        tcare_converted_df = tcare_df[tcare_df["status"] == "converted"] if not tcare_df.empty else tcare_df
+        # TCARE unit/pekerjaan: dihitung dari `tcare_schedule` (BUKAN
+        # `attack_list`), sesuai definisi bisnis yang benar (dikonfirmasi
+        # Wahyu 2026-07-22): "pekerjaan" = sisa jadwal servis yang jatuh
+        # tempo (bulan_jadwal <= periode). `attack_list` sudah di-dedup
+        # 1 baris/unit oleh ETL, jadi TIDAK BISA dipakai untuk hitung
+        # jumlah pekerjaan per unit -- itulah akar bug "pekerjaan selalu
+        # sama dengan unit" yang dilaporkan.
+        #
+        # FIX (2026-07-23): pakai `params.period` (periode yang DIKETIK
+        # user, mis. "juli") kalau ada -- SEBELUMNYA selalu pakai
+        # `datetime.now()` (hari ini), mengabaikan periode yang diminta
+        # user sama sekali. Fallback ke bulan berjalan cuma kalau user
+        # memang tidak sebut periode apa pun.
+        if params.period is not None:
+            bulan_batas = f"{params.period.tahun:04d}-{params.period.bulan:02d}"
+        else:
+            bulan_batas = datetime.now().strftime("%Y-%m")
+        tcare_pending_row = self.repo.tcare_pending_count(bulan_batas, sa_terakhir=params.sa_terakhir).iloc[0]
+        tcare_converted_row = self.repo.tcare_converted_count(bulan_batas, sa_terakhir=params.sa_terakhir).iloc[0]
 
         crm_df = df[df["source"] == "CRM"] if not df.empty else df
         cr7_df = df[df["source"] == "CR7"] if not df.empty else df
@@ -155,10 +172,10 @@ class AttackListService(BaseService):
             "sa_filter": params.sa_terakhir,
             "segment_rfm_filter": params.segment_rfm,
             "program_id_filter": params.program_id,
-            "tcare_unit_pending": int(tcare_pending_df["no_rangka"].nunique()) if not tcare_pending_df.empty else 0,
-            "tcare_pekerjaan_pending": int(len(tcare_pending_df)),
-            "tcare_unit_converted": int(tcare_converted_df["no_rangka"].nunique()) if not tcare_converted_df.empty else 0,
-            "tcare_pekerjaan_converted": int(len(tcare_converted_df)),
+            "tcare_unit_pending": int(tcare_pending_row["unit"]),
+            "tcare_pekerjaan_pending": int(tcare_pending_row["pekerjaan"]),
+            "tcare_unit_converted": int(tcare_converted_row["unit"]),
+            "tcare_pekerjaan_converted": int(tcare_converted_row["pekerjaan"]),
             "crm_total": int(len(crm_df)),
             "crm_converted": crm_converted,
             "crm_pending": crm_pending,

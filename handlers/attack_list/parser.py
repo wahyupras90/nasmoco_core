@@ -259,6 +259,14 @@ def _extract_dynamic_source(text: str) -> Optional[str]:
     if not clean_words:
         return None
 
+    # BUGFIX (2026-07-23, ditemukan Wahyu): sisa teks HARUS punya minimal
+    # 1 karakter alfanumerik -- sebelumnya tanda baca murni (mis. ">",
+    # sisa dari artefak copy-paste prompt CLI) lolos dianggap nama source
+    # PX yang valid, menyebabkan "source=>" yang jelas tidak masuk akal.
+    joined_check = "".join(clean_words)
+    if not re.search(r"[a-zA-Z0-9]", joined_check):
+        return None
+
     # 5. Pasangkan kembali dengan original teks agar casing/huruf besar-kecil tetap natural (jika ada)
     pattern = r"\s+".join([re.escape(w) for w in clean_words])
     match = re.search(pattern, text, re.IGNORECASE)
@@ -353,7 +361,15 @@ class AttackListParser(BaseParser):
             sa_terakhir=sa_terakhir,
             segment_rfm=segment_rfm,
             program_id=program_id,
-            period=period if expired_mode else None,
+            # PENTING: period SELALU diisi (bukan cuma saat expired_mode
+            # seperti sebelumnya) -- ditemukan bug 2026-07-23: mode "all"
+            # ("Attack List Semua") butuh tahu periode yang diminta user
+            # (mis. "juli") untuk scoping TCARE pending/converted, tapi
+            # sebelumnya period selalu None kalau bukan expired_mode,
+            # jadi _execute_all_summary() diam-diam selalu pakai
+            # datetime.now() (hari ini), mengabaikan periode yang diketik
+            # user sama sekali.
+            period=period,
             expired_mode=expired_mode,
             wants_summary_only=wants_summary_only,
         )

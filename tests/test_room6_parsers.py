@@ -123,6 +123,19 @@ def test_int010_dynamic_px_source_unaffected_by_program_whitelist():
     assert p.mode == "list"
 
 
+def test_dynamic_px_source_rejects_pure_punctuation():
+    """BUGFIX (2026-07-23, ditemukan Wahyu): sisa teks yang cuma tanda
+    baca (artefak copy-paste prompt CLI, mis. '>' ikut ke-input) TIDAK
+    BOLEH dianggap nama source PX yang valid. Sebelumnya
+    '> berapa attack list juli' menghasilkan source='>' secara harfiah."""
+    p = parser.parse("> berapa attack list juli")
+    assert p.source is None
+
+    # Pastikan source PX asli (ada huruf/angka) TETAP jalan seperti biasa.
+    p2 = parser.parse("attack list Recall_Rem_2026")
+    assert p2.source == "Recall_Rem_2026"
+
+
 def test_int010_source_check_uses_word_boundary_not_substring():
     """Permintaan verifikasi eksplisit Room 0 (ADR028 checklist, kasus
     lintas-domain): source (tcare/crm/cr7) di trigger natural HARUS dicek
@@ -184,12 +197,16 @@ def test_attack_list_parse_expired_mode_with_month_name_no_year():
     assert p.period.is_explicit is True
 
 
-def test_attack_list_parse_not_expired_mode_period_is_none():
-    """Tanpa kata 'expired', period TIDAK dipakai untuk filter list biasa
-    (period tetap None di params) -- beda dari mode expired."""
+def test_attack_list_parse_period_always_captured_regardless_of_expired_mode():
+    """FIX (2026-07-23): period SEKARANG SELALU diisi (bukan cuma saat
+    expired_mode seperti sebelumnya) -- dibutuhkan mode "all" ("Attack
+    List Semua") untuk scoping TCARE pending/converted ke periode yang
+    diminta user. `expired_mode` sendiri TETAP False untuk query tanpa
+    kata "expired" -- dua field ini independen."""
     p = parser.parse("attack list tcare bulan ini")
     assert p.expired_mode is False
-    assert p.period is None
+    assert p.period is not None
+    assert p.period.is_explicit is True
 
 
 def test_attack_list_match_missing_list_keyword_reproduces_known_gap():
@@ -255,4 +272,3 @@ def test_tcare_realtime_parser_history_keyword_does_not_hide_real_vin():
     """Keyword HISTORY diabaikan, VIN asli tetap diparse."""
     p = realtime_parser.parse("history web tcare MHKA6GK6JSJ084260")
     assert p.vins == ["MHKA6GK6JSJ084260"]
-
