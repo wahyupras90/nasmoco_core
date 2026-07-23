@@ -65,8 +65,8 @@ def test_attack_list_tcare_pending_count_excludes_expired(db_path):
 def test_attack_list_find_history_by_bulan(db_path):
     repo = AttackListRepository(db_path)
     df = repo.find_history(bulan="2026-06")
-    # Fixture (INT010): 1 TCARE + 3 CRM (2 program berbeda) di bulan yang sama
-    assert len(df) == 4
+    # Fixture (INT010): 1 TCARE + 3 CRM (2 program berbeda) + 2 PX di bulan sama
+    assert len(df) == 6
 
 
 def test_attack_list_find_history_filters_by_source(db_path):

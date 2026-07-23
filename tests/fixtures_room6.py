@@ -137,6 +137,10 @@ def make_temp_db() -> str:
             (2, "2026-06", "CRM", "MHCRM00000001", None, None, "At Risk", "Panggil Pulang - At Risk"),
             (3, "2026-06", "CRM", "MHCRM00000003", "2026-06-20", "2026-06", "At Risk", "Panggil Pulang - At Risk"),
             (4, "2026-06", "CRM", "MHCRM00000004", None, None, "New", "Aktivasi New & Potential"),
+            # PX (INT010 extend): program NULL by design (tidak granular),
+            # source = nama sheet Excel custom.
+            (5, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000001", "2026-06-18", "2026-06", "Loyal", None),
+            (6, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000002", None, None, "Loyal", None),
         ],
     )
 

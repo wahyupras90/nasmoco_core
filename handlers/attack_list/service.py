@@ -269,11 +269,15 @@ class AttackListService(BaseService):
         if not history_df.empty and "tgl_konversi" in history_df.columns:
             total_konversi = int(history_df["tgl_konversi"].notna().sum())
 
-        # INT010: breakdown per program -- HANYA relevan untuk baris CRM
-        # (program NULL untuk TCARE/CR7/PX by design). Dinamis dari
-        # DISTINCT data yang ada, TIDAK hardcode daftar P1-P4 (pelajaran
-        # dari bug PX mode "Semua" -- breakdown harus ikut data, bukan
-        # daftar tetap, supaya program baru otomatis kebaca).
+        # INT010: breakdown per "program" -- generik per kolom `program`
+        # apa adanya (bisa berisi nama program CRM, nama pekerjaan CR7,
+        # dst -- KOREKSI dari asumsi awal "NULL selain CRM", ditemukan
+        # lewat test manual production bahwa CR7 juga terisi). Dihitung
+        # dari history_df LENGKAP (SEBELUM difilter converted-saja di
+        # bawah), supaya breakdown & summary tetap merepresentasikan
+        # seluruh populasi yang match filter, bukan cuma subset yang
+        # ditampilkan. Dinamis dari DISTINCT data, TIDAK hardcode daftar
+        # tetap (pelajaran dari bug PX mode "Semua").
         program_breakdown = []
         if not history_df.empty and "program" in history_df.columns:
             crm_history_df = history_df[history_df["program"].notna()]
@@ -286,6 +290,25 @@ class AttackListService(BaseService):
                 })
             program_breakdown.sort(key=lambda row: row["program"])
 
+        # KEPUTUSAN ROOM 0 (mode history vs mode list): kata "konversi"
+        # di query BUKAN cuma trigger masuk mode history -- juga berarti
+        # user cuma mau LIHAT yang sudah convert, bukan seluruh populasi
+        # yang match filter source/program/periode. Jadi dataframe yang
+        # DIKEMBALIKAN (untuk tampilan CLI & export Excel) difilter ke
+        # "converted saja" DI SINI, SETELAH summary/breakdown di atas
+        # selesai dihitung dari data lengkap -- urutan ini wajib, supaya
+        # total_tercatat/total_konversi/program_breakdown TIDAK ikut
+        # menyusut gara-gara dataframe sudah difilter duluan.
+        #
+        # Mode "list" (attack_list <source>, _execute_list()) TIDAK
+        # disentuh sama sekali -- tetap tampilkan semua baris (pending +
+        # converted) dengan keterangan status, sesuai perilaku lama.
+        converted_df = (
+            history_df[history_df["tgl_konversi"].notna()]
+            if not history_df.empty and "tgl_konversi" in history_df.columns
+            else history_df
+        )
+
         return {
             "mode": "history",
             "bulan": bulan_str,
@@ -293,7 +316,7 @@ class AttackListService(BaseService):
             "period_is_explicit": params.period.is_explicit,
             "source_filter": params.source,
             "program_filter": safe_program,
-            "history": history_df,
+            "history": converted_df,
             "total_tercatat": int(len(history_df)),
             "total_konversi": total_konversi,
             "program_breakdown": program_breakdown,

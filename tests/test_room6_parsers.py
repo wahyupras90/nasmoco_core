@@ -151,6 +151,52 @@ def test_int010_source_check_uses_word_boundary_not_substring():
     assert parser.match("customer ini kapan terakhir datang service?") is False
 
 
+# -- INT010 (extend): trigger history untuk nama program PX --
+
+def test_int010_px_history_trigger_extracts_source_no_program():
+    """DoD #1: kata pemicu + nama PX -> mode history, source=nama PX,
+    program tetap None (PX tidak granular per program, sesuai desain)."""
+    p = parser.parse("konversi T-CARE LITE FREE 2LT bulan juli")
+    assert p.mode == "history"
+    assert p.source == "T-CARE LITE FREE 2LT"
+    assert p.program is None
+
+
+def test_int010_px_history_trigger_requires_trigger_word():
+    """DoD #3 (ADR028): nama PX sendirian, TANPA kata pemicu apa pun,
+    TIDAK boleh match -- beda dari whitelist CRM yang sudah pasti unik/
+    terbatas, nama PX bebas sehingga wajib ada penanda niat eksplisit."""
+    assert parser.match("T-CARE LITE FREE 2LT") is False
+    assert parser.match("T-CARE LITE FREE 2LT bulan juli") is False
+
+
+def test_int010_crm_whitelist_wins_over_px_fallback_same_trigger_word():
+    """DoD #2: dibuktikan eksplisit (bukan asumsi) -- whitelist VALID_PROGRAM
+    (CRM) dicek LEBIH DULU dari fallback PX, meski sama-sama dipicu kata
+    'konversi'. Nama program CRM resmi TIDAK PERNAH bocor ke jalur PX."""
+    p = parser.parse("konversi Aktivasi New & Potential bulan juli")
+    assert p.source == "CRM"
+    assert p.program == "aktivasi new & potential"
+
+
+def test_int010_px_name_not_matching_whitelist_falls_back_correctly():
+    """DoD #2 (sisi sebaliknya): nama yang TIDAK match whitelist CRM utuh
+    (walau mengandung kata yang mirip) diproses BENAR sebagai PX, bukan
+    salah ke CRM atau gagal total."""
+    p = parser.parse("konversi Percepat bulan juli")
+    assert p.program is None
+    assert p.source == "Percepat"
+
+
+def test_int010_px_list_mode_unaffected_by_history_trigger_extension():
+    """DoD #4: mode 'list' PX (fungsi lama Room 6) tidak berubah sama
+    sekali oleh penambahan jalur trigger history natural PX."""
+    p = parser.parse("attack list T-CARE LITE FREE 2LT")
+    assert p.mode == "list"
+    assert p.source == "T-CARE LITE FREE 2LT"
+    assert p.program is None
+
+
 def test_attack_list_parse_sa_whitelist_ignores_non_sa_words():
     """Bug ditemukan sebelumnya: kata 'yg' (singkatan 'yang') salah
     tertangkap sebagai kode SA lewat regex generik. Diperbaiki dengan

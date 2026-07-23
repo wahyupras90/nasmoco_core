@@ -188,6 +188,41 @@ def _extract_program(text_lower: str) -> Optional[str]:
     return None
 
 
+def _extract_history_source_or_program(text: str, t_lower: str):
+    """INT010 (extend): tentukan (source, program) untuk trigger history
+    natural, dengan URUTAN WAJIB (dikonfirmasi Room 0, bukan detail bebas):
+
+        1. Whitelist VALID_PROGRAM (CRM P1-P4) dicek LEBIH DULU.
+        2. HANYA kalau (1) tidak match, fallback ke source statis
+           (tcare/crm/cr7) ATAU ekstraksi PX dinamis
+           (`_extract_dynamic_source`, reuse fungsi yang sama dipakai
+           mode "list" -- TIDAK menduplikasi logic ekstraksi PX).
+
+    Urutan ini penting supaya nama program CRM (mengandung spasi/tanda
+    hubung) tidak pernah "bocor" ke ekstraksi PX (bug lama, sudah
+    diperbaiki), DAN sebaliknya nama PX custom tidak pernah salah
+    diproses seolah program CRM (whitelist CRM sudah pasti/terbatas 4
+    nilai, jadi kalau tidak match salah satu dari situ, otomatis aman
+    dilanjutkan ke jalur PX).
+
+    Return: (source, program) -- program None kalau hasilnya PX/source
+    statis (PX/TCARE/CR7 tidak granular per program, sesuai desain awal).
+    """
+    program = _extract_program(t_lower)
+    if program is not None:
+        return "CRM", program
+
+    for key, value in _SOURCE_MAP.items():
+        if re.search(rf"\b{key}\b", t_lower):
+            return value, None
+
+    px_source = _extract_dynamic_source(text)
+    if px_source:
+        return px_source, None
+
+    return None, None
+
+
 def _wants_history_natural(t: str) -> bool:
     """INT010: kata "datang" (mis. 'berapa yang datang') dianggap trigger
     history HANYA kalau muncul bersama penanda domain attack list --
@@ -286,6 +321,8 @@ class AttackListParser(BaseParser):
         # program X", "berapa yang datang dari program Y", dst. Tetap
         # butuh konteks domain (source/program/kata konversi) supaya
         # tidak menangkap kalimat umum di luar attack list (ADR028).
+        # Whitelist VALID_PROGRAM (CRM) DICEK LEBIH DULU -- urutan wajib,
+        # dikonfirmasi Room 0 (lihat _extract_history_source_or_program).
         if any(prog in t for prog in VALID_PROGRAM):
             return True
         # BUGFIX: word-boundary, bukan substring -- "MHTCARE0000001"
@@ -294,6 +331,15 @@ class AttackListParser(BaseParser):
             re.search(rf"\b{key}\b", t) for key in _SOURCE_MAP
         ):
             return True
+        # INT010 (extend): kata pemicu konversi/histori/history + nama
+        # program PX custom (fallback SETELAH whitelist CRM & source
+        # statis di atas tidak match) -- kata pemicu tetap WAJIB ada
+        # (ADR028: nama PX sendirian, tanpa kata pemicu, TIDAK boleh
+        # match, karena nama PX bebas/tidak whitelist seperti CRM).
+        if any(w in t for w in _HISTORY_TRIGGER_WORDS):
+            px_source = _extract_dynamic_source(text)
+            if px_source:
+                return True
         return _wants_history_natural(t)
 
     def parse(self, text: str) -> AttackListParams:
@@ -338,14 +384,27 @@ class AttackListParser(BaseParser):
         if m:
             program_id = int(m.group(1))
 
-        # wants_history sekarang punya DUA jalur:
+        # wants_history sekarang punya BEBERAPA jalur:
         #   1. eksplisit: kata konversi/histori/history + periode eksplisit
         #      (perilaku lama Room 6, TIDAK berubah)
         #   2. natural (INT010): sebut nama program (VALID_PROGRAM) secara
         #      langsung, ATAU kata "datang" + konteks domain -- keduanya
         #      dianggap niat history meski periode tidak eksplisit
         #      (default ke bulan berjalan, sama seperti expired_mode)
-        wants_history = wants_history or program is not None or _wants_history_natural(t)
+        #   3. natural PX (extend): kata pemicu konversi/histori/history +
+        #      source ketemu via fallback PX dinamis (source SUDAH
+        #      dihitung di atas, whitelist CRM->statis->PX, urutan wajib
+        #      dikonfirmasi Room 0) -- kata pemicu tetap disyaratkan
+        #      (ADR028), nama PX sendirian tanpa itu TIDAK masuk sini.
+        wants_history_px = (
+            any(w in t for w in _HISTORY_TRIGGER_WORDS)
+            and source is not None
+            and source not in _SOURCE_MAP.values()
+            and program is None
+        )
+        wants_history = (
+            wants_history or program is not None or _wants_history_natural(t) or wants_history_px
+        )
 
         wants_summary_only = any(k in t for k in SUMMARY_ONLY_KEYWORDS) and not any(
             k in t for k in LIST_KEYWORDS

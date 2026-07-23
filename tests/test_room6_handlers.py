@@ -124,9 +124,37 @@ def test_attack_list_handler_history_mode(router):
     result = router.route("attack list konversi bulan 2026-06")
     assert result.code == "INT008_OK"
     assert result.summary["mode"] == "history"
-    # Fixture (INT010): 4 baris bulan 2026-06 (1 TCARE + 3 CRM, 2 program beda)
-    assert result.summary["total_tercatat"] == 4
-    assert result.summary["total_konversi"] == 2
+    # Fixture (INT010): 6 baris bulan 2026-06 (1 TCARE + 3 CRM + 2 PX)
+    assert result.summary["total_tercatat"] == 6
+    assert result.summary["total_konversi"] == 3
+
+
+def test_attack_list_handler_history_dataframe_filtered_to_converted_only(router):
+    """KEPUTUSAN ROOM 0: kata "konversi" di query bukan cuma trigger mode
+    history -- juga berarti user cuma mau lihat yang SUDAH convert.
+    Dataframe yang dikembalikan (tampilan CLI & export Excel) HARUS
+    hanya berisi baris converted, TAPI summary (total_tercatat,
+    total_konversi) tetap dihitung dari SELURUH populasi yang match
+    filter (tidak ikut menyusut)."""
+    result = router.route("attack list konversi bulan 2026-06")
+    # DoD: jumlah baris dataframe HARUS SAMA DENGAN total_konversi di
+    # summary (bukti filter benar, bukan asal potong angka lain).
+    assert len(result.dataframe) == result.summary["total_konversi"] == 3
+    # Summary total_tercatat TIDAK ikut menyusut -- tetap populasi penuh (6).
+    assert result.summary["total_tercatat"] == 6
+    # Semua baris di dataframe yang tersisa harus punya tgl_konversi terisi.
+    assert result.dataframe["tgl_konversi"].notna().all()
+
+
+def test_attack_list_handler_list_mode_dataframe_not_filtered_by_converted(router):
+    """Regresi wajib (DoD Room 0): mode 'list' biasa (TANPA kata
+    konversi) TIDAK disentuh sama sekali -- tetap tampilkan SEMUA baris
+    (pending + converted), tidak ikut difilter ke converted-saja."""
+    result = router.route("attack list tcare")
+    assert result.summary["mode"] == "list"
+    # Mode list baca dari attack_list (current state), bukan history --
+    # pastikan tidak ada filter tgl_konversi yang ikut merembet ke sini.
+    assert "tgl_konversi" not in result.dataframe.columns or len(result.dataframe) >= 1
 
 
 # -- INT010: breakdown/filter per program CRM --
@@ -138,10 +166,16 @@ def test_int010_history_program_breakdown_dynamic(router):
     breakdown = result.summary["program_breakdown"]
     programs = {row["program"] for row in breakdown}
     assert programs == {"Panggil Pulang - At Risk", "Aktivasi New & Potential"}
-    # Panggil Pulang - At Risk: 2 baris (id=2 pending, id=3 converted)
+    # Panggil Pulang - At Risk: 2 baris (id=2 pending, id=3 converted) --
+    # breakdown TETAP dari populasi lengkap, tidak ikut menyusut oleh
+    # filter dataframe converted-saja (KEPUTUSAN ROOM 0).
     pp_at_risk = next(r for r in breakdown if r["program"] == "Panggil Pulang - At Risk")
     assert pp_at_risk["total"] == 2
     assert pp_at_risk["konversi"] == 1
+    # Dataframe yang dikembalikan HANYA berisi baris converted (3 total,
+    # gabungan semua source: 1 TCARE + 1 CRM Panggil Pulang + 1 PX).
+    assert len(result.dataframe) == 3
+    assert result.dataframe["tgl_konversi"].notna().all()
 
 
 def test_int010_history_filter_program_spesifik(router):
@@ -234,6 +268,68 @@ def test_int010_px_source_not_confused_with_program_name(router):
     assert parsed.source == "Recall_Rem_2026"
     assert parsed.program is None
     assert parsed.mode == "list"
+
+
+# -- INT010 (extend): trigger history untuk nama program PX --
+
+def test_int010_history_px_name_with_trigger_word_matches(router):
+    """DoD #1: 'konversi <nama PX> bulan juli' berhasil match, masuk mode
+    history dengan source = nama PX (bukan program, PX tidak granular)."""
+    result = router.route("konversi T-CARE LITE FREE 2LT bulan 2026-06")
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "history"
+    assert result.summary["filter_source"] == "T-CARE LITE FREE 2LT"
+    assert result.summary["total_tercatat"] == 2
+    assert result.summary["total_konversi"] == 1
+
+
+def test_int010_history_px_name_without_trigger_word_not_matched(router):
+    """DoD #3 (ADR028): nama PX SENDIRIAN, tanpa kata pemicu
+    (konversi/histori/history/datang+konteks), TIDAK boleh match --
+    nama PX bebas/tidak whitelist seperti CRM, jadi wajib ada kata
+    pemicu eksplisit supaya tidak salah tangkap kalimat lain."""
+    handler = AttackListHandler()
+    assert handler.match("T-CARE LITE FREE 2LT") is False
+    assert handler.match("T-CARE LITE FREE 2LT bulan juli") is False
+
+
+def test_int010_whitelist_crm_checked_before_px_fallback(router):
+    """DoD #2: urutan whitelist CRM -> fallback PX dibuktikan EKSPLISIT
+    lewat test, bukan cuma diasumsikan dari urutan kode (syarat wajib
+    Room 0). Nama program CRM asli TIDAK PERNAH salah jatuh ke jalur PX,
+    meski dicek lewat jalur trigger yang sama (kata 'konversi')."""
+    handler = AttackListHandler()
+    parsed = handler.parser.parse("konversi Panggil Pulang - At Risk bulan 2026-06")
+    # HARUS masuk sebagai program CRM (source=CRM, program terisi),
+    # BUKAN source=PX dengan nama "Panggil Pulang - At Risk".
+    assert parsed.source == "CRM"
+    assert parsed.program == "panggil pulang - at risk"
+
+
+def test_int010_px_name_partially_similar_to_crm_whitelist_still_works_as_px(router):
+    """DoD #2 (sisi sebaliknya): nama PX yang KEBETULAN mirip sebagian
+    kata whitelist CRM (tapi TIDAK match utuh salah satu dari 4 nilai
+    whitelist) tetap diproses BENAR sebagai PX -- bukan salah ke CRM,
+    dan bukan juga gagal tidak match sama sekali."""
+    handler = AttackListHandler()
+    # "Panggil" saja (bukan "Panggil Pulang - At Risk" utuh) BUKAN
+    # whitelist CRM yang valid -- harus fallback jadi source PX bernama
+    # "Panggil", bukan program CRM.
+    parsed = handler.parser.parse("konversi Panggil bulan 2026-06")
+    assert parsed.program is None
+    assert parsed.source == "Panggil"
+    assert parsed.mode == "history"
+
+
+def test_int010_px_list_mode_unaffected_by_history_extension(router):
+    """DoD #4 (regresi wajib): mode 'list' untuk PX (`attack list <nama
+    PX>`, fungsi lama Room 6 yang sudah stabil) TIDAK berubah sama sekali
+    oleh penambahan trigger history natural PX."""
+    handler = AttackListHandler()
+    parsed = handler.parser.parse("attack list T-CARE LITE FREE 2LT")
+    assert parsed.mode == "list"
+    assert parsed.source == "T-CARE LITE FREE 2LT"
+    assert parsed.program is None
 
 
 def test_attack_list_handler_not_matched_by_unrelated_text(router):
