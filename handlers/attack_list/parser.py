@@ -175,17 +175,17 @@ class AttackListParams(BaseParams):
     period: Optional[ParsedPeriod] = None  # mode=="history" ATAU expired_mode=True
     expired_mode: bool = False
     wants_summary_only: bool = False
-    # KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): kalau kata trigger
+    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kalau kata trigger
     # konversi/history disebut BERSAMA "expired", TIDAK beralih ke
     # mode="history" (attack_list_history tidak punya konsep "expired PADA
     # bulan lampau", dan JOIN runtime ke attack_list untuk itu semantiknya
     # tidak akurat -- lihat brief investigasi Room 7a). Tetap mode="list" +
-    # expired_mode=True (populasi SAMA PERSIS dengan "attack list ...
-    # expired ..."), TIDAK berubah. Flag ini menandakan Service harus
-    # MENOLAK dengan pesan penjelasan -- BUKAN menghitung angka konversi
-    # apa pun -- karena "expired" adalah status akhir final (unit
-    # gugur/hangus dari follow-up), sehingga "konversi dari unit yang
-    # sudah expired" secara konsep tidak valid ditanya (mirip peran
+    # expired_mode=True (populasi berbasis batas_tcare semata, pending+
+    # converted sekaligus -- lihat AttackListRepository.find()). Flag ini
+    # menandakan Formatter harus MENONJOLKAN angka konversi di pesan --
+    # BUKAN lagi pesan penolakan (Opsi A dibatalkan) -- karena definisi
+    # "expired" sudah diperbaiki, pertanyaan "berapa converted dari yang
+    # expired" sekarang valid dan bisa dijawab angka nyata (mirip peran
     # wants_summary_only sebagai preseden pola flag).
     wants_conversion_summary: bool = False
 
@@ -441,18 +441,18 @@ class AttackListParser(BaseParser):
             wants_history or program is not None or _wants_history_natural(t) or wants_history_px
         )
 
-        # KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): begitu kata "expired"
+        # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): begitu kata "expired"
         # disebut BERSAMA kata trigger konversi/history, jangan pernah
         # beralih ke mode="history" -- attack_list_history tidak mengenal
         # konsep "expired" sama sekali (kolom batas_tcare cuma ada di
         # attack_list, dan JOIN runtime secara semantik tidak akurat untuk
         # histori bulan lampau, lihat brief investigasi Room 7a). Tetap
-        # mode="list" + expired_mode=True (TIDAK berubah), tandai
-        # wants_conversion_summary=True sebagai sinyal Service untuk
-        # MENOLAK dengan pesan penjelasan -- "expired" adalah status akhir
-        # final (unit gugur/hangus dari follow-up), "konversi dari unit
-        # yang sudah expired" secara konsep tidak valid ditanya, BUKAN
-        # angka 0 ataupun angka lain.
+        # mode="list" + expired_mode=True (TIDAK berubah, populasi sekarang
+        # pending+converted sekaligus -- lihat AttackListRepository.find()),
+        # tandai wants_conversion_summary=True sebagai sinyal Formatter
+        # untuk MENONJOLKAN angka konversi di pesan -- BUKAN lagi pesan
+        # penolakan (Opsi A DIBATALKAN setelah klarifikasi ulang definisi
+        # "expired" dengan Wahyu).
         wants_conversion_summary = False
         if wants_history and expired_mode:
             wants_history = False

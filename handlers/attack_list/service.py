@@ -69,13 +69,13 @@ class AttackListServiceParams:
     period: Optional[ParsedPeriod] = None
     expired_mode: bool = False
     wants_summary_only: bool = False
-    # KEPUTUSAN FINAL ROOM 0 (2026-07-24): kombinasi kata trigger konversi/
-    # history + "expired" TIDAK menghasilkan angka konversi apa pun --
-    # "expired" adalah status akhir final (unit gugur/hangus dari follow-up),
-    # sehingga "konversi dari unit yang sudah expired" adalah pertanyaan yang
-    # secara konsep tidak valid, bukan angka 0. Flag ini jadi sinyal untuk
-    # tampilkan pesan penjelasan (bukan hitung apa pun) saat True bersama
-    # expired_mode=True juga True.
+    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kombinasi kata trigger
+    # konversi/history + "expired" SEKARANG bermakna dan bisa dijawab
+    # dengan ANGKA -- definisi "expired" sudah diperbaiki jadi berbasis
+    # batas_tcare semata (pending+converted sekaligus, BUKAN lagi exclude
+    # status). Flag ini jadi sinyal ke Formatter untuk MENONJOLKAN angka
+    # konversi di pesan (bukan menampilkan daftar unit penuh, dan BUKAN
+    # lagi pesan penolakan seperti revisi Opsi A sebelumnya).
     wants_conversion_summary: bool = False
 
 
@@ -86,30 +86,20 @@ class AttackListService(BaseService):
     def execute(self, params: AttackListServiceParams) -> dict:
         if params.mode == "history":
             return self._execute_history(params)
-        # KEPUTUSAN FINAL ROOM 0 (2026-07-24): kombinasi kata trigger
-        # konversi/history + "expired" TIDAK PERNAH menghasilkan angka
-        # konversi -- "expired" adalah status akhir final (unit sudah
-        # gugur dari follow-up), pertanyaan "konversi yang expired" secara
-        # konsep tidak valid. Tolak SEBELUM query apa pun dijalankan (tidak
-        # perlu attack_list_history maupun attack_list sama sekali untuk
-        # kasus ini) -- cukup pesan penjelasan, response tetap sukses
-        # (INT008_OK), bukan error/exception.
-        if params.wants_conversion_summary and params.expired_mode:
-            return self._execute_conversion_summary_rejected(params)
+        # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kombinasi kata
+        # trigger konversi/history + "expired" SEKARANG bermakna dan bisa
+        # dijawab dengan ANGKA -- karena definisi "expired" sudah diubah
+        # jadi berbasis batas_tcare semata (pending+converted sekaligus,
+        # lihat AttackListRepository.find()), bukan lagi exclude status.
+        # TIDAK ADA lagi cabang penolakan (Opsi A, room7a-expired-history-
+        # validated, DIBATALKAN) -- cukup jalankan _execute_list() seperti
+        # biasa (total_converted/total_pending sudah otomatis benar di
+        # sana), wants_conversion_summary hanya jadi sinyal Formatter untuk
+        # MENONJOLKAN angka konversi di pesan, bukan menampilkan daftar
+        # unit penuh.
         if not params.expired_mode and params.source is None:
             return self._execute_all_summary(params)
         return self._execute_list(params)
-
-    def _execute_conversion_summary_rejected(self, params: AttackListServiceParams) -> dict:
-        """Kombinasi 'konversi/histori/history' + 'expired' -- ditolak
-        dengan pesan penjelasan (Opsi A, KEPUTUSAN FINAL ROOM 0). Tidak
-        menyentuh repository sama sekali."""
-        return {
-            "mode": "conversion_summary_rejected",
-            "source_filter": params.source,
-            "sa_filter": params.sa_terakhir,
-            "units": pd.DataFrame(),
-        }
 
     def _execute_all_summary(self, params: AttackListServiceParams) -> dict:
         """View 'Attack List Semua' -- source tidak disebut, bukan
@@ -281,6 +271,11 @@ class AttackListService(BaseService):
             "total_pending": total_pending,
             "summary_per_source": summary_per_source_df,
             "sa_filter": params.sa_terakhir,
+            # KEPUTUSAN ROOM 0 (REVISI KEDUA): sinyal ke Formatter untuk
+            # menonjolkan angka konversi di pesan (bukan menampilkan
+            # daftar unit penuh) -- dipicu saat kata trigger konversi/
+            # history disebut bersama expired_mode=True.
+            "wants_conversion_summary": params.wants_conversion_summary,
         }
 
     def _execute_history(self, params: AttackListServiceParams) -> dict:

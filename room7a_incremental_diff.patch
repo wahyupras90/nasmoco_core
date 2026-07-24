@@ -1,0 +1,663 @@
+diff --git a/BRIEF_ROOM0_REDEFINISI_EXPIRED.md b/BRIEF_ROOM0_REDEFINISI_EXPIRED.md
+new file mode 100644
+index 0000000..25a3373
+--- /dev/null
++++ b/BRIEF_ROOM0_REDEFINISI_EXPIRED.md
+@@ -0,0 +1,128 @@
++# BRIEF ROOM 7a → ROOM 0 — Usulan Perubahan Definisi "Expired": Populasi Berdasar Periode Saja, Bukan Exclude Status
++
++**Konteks:** Klarifikasi langsung dari Wahyu (chat CLI production, 2026-07-24)
++setelah melihat hasil `konversi attack list tcare expired bulan juli sa
++bdr` yang ditolak (Opsi A, sudah di-tag `room7a-expired-history-validated`,
++334 test). Ternyata definisi "expired" yang Wahyu maksud **berbeda** dari
++definisi yang sudah berjalan di sistem — bukan revisi dari keputusan Opsi A
++(itu tetap benar untuk definisi LAMA), tapi usulan **definisi baru**.
++
++---
++
++## Definisi LAMA (sistem sekarang, `repositories/attack_list_repository.py::find()`)
++
++```sql
++WHERE strftime('%Y-%m', batas_tcare) = <bulan>
++  AND status NOT IN ('converted', 'resolved')
++```
++
++"Expired" = batas waktu lewat **DAN** unit itu **belum pernah convert**.
++Begitu status berubah jadi `converted`, unit itu **otomatis dibuang** dari
++hasil populasi "expired" — dianggap sudah selesai, tidak relevan lagi.
++
++Konsekuensinya (root cause bug sebelumnya): pertanyaan "berapa yang
++converted dari yang expired" secara struktural SELALU 0, karena populasi
++"expired" sudah dijamin 100% berisi unit `pending` saja.
++
++## Definisi BARU yang diusulkan (dikonfirmasi langsung Wahyu, 2026-07-24)
++
++**"Expired bulan X"** = semua unit yang `batas_tcare`-nya jatuh di bulan X,
++**apa pun status unit itu sekarang** (pending ATAU converted). Populasi
++tidak lagi dikecualikan berdasarkan status — filter HANYA berbasis waktu
++(`batas_tcare`).
++
++Dengan definisi ini, query `attack list tcare expired juli sa bdr` bisa
++menghasilkan populasi LEBIH BESAR dari 6 unit (bisa jadi 6 pending + N
++converted = total lebih dari 6), dan pertanyaan lanjutan `konversi ...
++expired ...` jadi bermakna: **dari total populasi itu, berapa yang sudah
++convert** — bukan lagi pertanyaan yang secara struktural pasti 0.
++
++## Contoh konkret (angka ilustrasi, BUKAN data asli)
++
++| | Definisi LAMA | Definisi BARU |
++|---|---|---|
++| Filter SQL | `batas_tcare=Juli AND status NOT IN (converted,resolved)` | `batas_tcare=Juli` saja |
++| Hasil "attack list ... expired ..." | 6 unit (semua pasti pending) | Misal 10 unit (6 pending + 4 converted) |
++| Hasil "konversi ... expired ..." | Tidak valid ditanya (Opsi A, pesan penjelasan) | 4 dari 10 (bermakna, bisa dihitung) |
++
++## Dampak ke bagian lain sistem — sudah dicek, TERISOLASI
++
++Saya grep seluruh codebase untuk `expired_mode`/`status NOT IN`:
++
++- `status NOT IN ('converted', 'resolved')` **HANYA muncul satu kali**,
++  di `AttackListRepository.find()`.
++- `expired_mode` **HANYA dipakai di jalur `attack_list` mode "list"**.
++  Mode "Attack List Semua" (`_execute_all_summary`) secara eksplisit
++  TIDAK mendukung `expired_mode` sama sekali (dikonfirmasi komentar
++  service.py: *"Mode `expired` TIDAK didukung sama sekali di view
++  ini... persis legacy"*) — jadi TIDAK terdampak perubahan ini.
++  Mode "history" (`attack_list_history`) juga tidak terdampak (definisi
++  ini murni domain `attack_list`, bukan `attack_list_history`).
++
++**Kesimpulan:** perubahan definisi ini **terisolasi** ke satu method
++repository + turunannya (mode list biasa untuk expired). Tidak menyebar
++ke fitur lain yang sudah stabil.
++
++## Yang PERLU dipastikan sebelum implementasi
++
++1. **Regresi test existing** — `test_attack_list_find_expired_mode_excludes_converted`
++   (dan variannya) **mengasumsikan** perilaku LAMA (exclude converted).
++   Kalau definisi diganti, test ini **wajib direvisi** (bukan dihapus
++   diam-diam) — perlu persetujuan eksplisit Room 0 karena ini mengubah
++   ekspektasi test yang sudah pernah di-sign-off sebelumnya.
++2. **Tampilan mode list biasa** (`attack list tcare expired juli sa bdr`,
++   TANPA kata konversi) — populasinya akan ikut berubah (bisa lebih
++   banyak dari sebelumnya, karena unit converted ikut muncul). Formatter
++   perlu menampilkan status per unit dengan jelas (kolom `status` sudah
++   ada di dataframe, tinggal pastikan breakdown pending/converted
++   ditampilkan di ringkasan — pola ini sudah ada di mode list non-expired,
++   tinggal disamakan untuk mode expired).
++3. **Nama/istilah** — dengan definisi baru, kata "expired" jadi murni
++   soal WAKTU (jatuh tempo di bulan X), bukan lagi menyiratkan "sudah
++   gugur/tidak berlaku". Perlu dipertimbangkan apakah istilah ini masih
++   pas, atau perlu penyesuaian bahasa di pesan/summary supaya tidak
++   membingungkan user lain yang sudah terbiasa dengan makna lama
++   ("expired" = gugur). Ini soal komunikasi/UX, bukan soal teknis, tapi
++   penting supaya user lain tidak salah paham arti "expired" berubah.
++4. **Kombinasi "konversi ... expired ..."** — dengan definisi baru, Opsi
++   A (tolak dengan pesan penjelasan) **tidak lagi berlaku** untuk
++   kombinasi ini secara langsung. Perlu jalur baru: hitung
++   pending/converted dari populasi yang SUDAH pakai definisi baru (tidak
++   perlu attack_list_history sama sekali, cukup dari attack_list dengan
++   filter batas_tcare tanpa exclude status) — mirip pola perhitungan yang
++   sudah ada di mode list non-expired (`total_converted`/`total_pending`
++   dihitung dari raw_df sebelum filter tampilan, `_execute_list()`
++   baris 224-229).
++
++## Rencana implementasi (menunggu persetujuan Room 0)
++
++```
++repositories/attack_list_repository.py::find():
++  expired_mode=True -> filter HANYA strftime(batas_tcare)=bulan,
++  HAPUS kondisi "status NOT IN (converted, resolved)"
++
++service.py::_execute_list():
++  total_converted/total_pending sudah dihitung dari raw_df
++  (baris 224-229) -- TIDAK PERLU logic baru, otomatis benar begitu
++  query di atas diubah (raw_df akan berisi campuran pending+converted).
++
++Kombinasi "konversi ... expired ...":
++  HAPUS/revisi cabang _execute_conversion_summary_rejected() --
++  bukan ditolak lagi, tapi tampilkan ringkasan pending/converted dari
++  populasi baru (via _execute_list() yang sudah otomatis benar).
++  wants_conversion_summary tetap dipakai sebagai sinyal "user minta
++  fokus ke angka konversi", tapi Service TIDAK LAGI menolak -- cukup
++  format pesan yang menonjolkan angka konversi (bukan daftar unit).
++```
++
++## Pertanyaan untuk Room 0
++
++1. Setuju definisi "expired" diubah jadi murni berbasis
++   `batas_tcare` (tanpa exclude status)?
++2. Kalau ya, boleh revisi
++   `test_attack_list_find_expired_mode_excludes_converted` (ganti
++   ekspektasi, bukan dihapus tanpa jejak)?
++3. Perlu penyesuaian istilah/bahasa di pesan (poin §3) atau cukup
++   pakai kata "expired" seperti sekarang dengan makna baru?
++
++Menunggu keputusan sebelum mulai coding.
+diff --git a/handlers/attack_list/formatter.py b/handlers/attack_list/formatter.py
+index 5b2f050..9b19f18 100644
+--- a/handlers/attack_list/formatter.py
++++ b/handlers/attack_list/formatter.py
+@@ -4,13 +4,6 @@ handlers/attack_list/formatter.py — INT008 Attack List (ADR006)
+ 
+ 
+ def build_summary(result: dict) -> dict:
+-    if result["mode"] == "conversion_summary_rejected":
+-        return {
+-            "mode": "conversion_summary_rejected",
+-            "filter_source": result.get("source_filter"),
+-            "filter_sa": result.get("sa_filter"),
+-        }
+-
+     if result["mode"] == "history":
+         return {
+             "mode": "history",
+@@ -67,27 +60,11 @@ def build_summary(result: dict) -> dict:
+         "total_converted": result.get("total_converted", 0),
+         "total_pending": result.get("total_pending", 0),
+         "jumlah_per_source": per_source,
++        "wants_conversion_summary": result.get("wants_conversion_summary", False),
+     }
+ 
+ 
+ def format_message(result: dict) -> str:
+-    if result["mode"] == "conversion_summary_rejected":
+-        # KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): "expired" adalah
+-        # status akhir final (unit gugur/hangus dari follow-up) --
+-        # "konversi dari unit yang sudah expired" secara konsep tidak
+-        # valid ditanya, jadi TIDAK menghitung angka apa pun (bukan 0).
+-        lines = [
+-            "Unit yang sudah expired tidak dihitung sebagai konversi — "
+-            "begitu lewat batas waktu, statusnya dianggap gugur/tidak "
+-            "berlaku lagi.",
+-        ]
+-        source_hint = result.get("source_filter") or "[source]"
+-        lines.append(
+-            f"Gunakan 'attack list {source_hint} expired [periode]' untuk "
+-            "melihat daftar unit yang sudah gugur tersebut."
+-        )
+-        return "\n".join(lines)
+-
+     if result["mode"] == "history":
+         label = result["bulan_label"]
+         assumed = "" if result["period_is_explicit"] else " (diasumsikan)"
+@@ -133,9 +110,15 @@ def format_message(result: dict) -> str:
+         mode_label = "Attack List"
+ 
+     lines = [f"{mode_label}{filter_text}"]
+-    
+-    # Menyeragamkan format respons dengan breakdown konversi/pending
+-    if not result.get("expired_mode") and "total_converted" in result:
++
++    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): breakdown converted/
++    # pending SEKARANG juga ditampilkan untuk mode expired -- populasi
++    # expired sekarang bisa berisi campuran keduanya (definisi baru:
++    # berbasis batas_tcare semata, bukan exclude status), jadi breakdown
++    # ini penting supaya user langsung lihat komposisinya tanpa menerka
++    # (sebelumnya sengaja disembunyikan untuk expired karena breakdown
++    # itu percuma -- selalu 0 converted dengan definisi lama).
++    if "total_converted" in result:
+         gabungan = result["total_gabungan"]
+         conv = result["total_converted"]
+         pend = result["total_pending"]
+@@ -143,6 +126,19 @@ def format_message(result: dict) -> str:
+     else:
+         lines.append(f"Total unit: {total:,}")
+ 
++    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kata trigger konversi/
++    # history disebut BERSAMA "expired" -> tonjolkan angka konversi
++    # secara eksplisit (bukan lagi pesan penolakan seperti Opsi A yang
++    # DIBATALKAN). Populasi tetap sama seperti mode list expired biasa
++    # (baris "Total unit" di atas), baris ini cuma menegaskan makna
++    # pertanyaan yang ditanyakan user.
++    if result.get("wants_conversion_summary") and "total_converted" in result:
++        lines.append(
++            f"Sudah konversi: {result['total_converted']:,} dari "
++            f"{result['total_gabungan']:,} unit yang batas waktunya jatuh "
++            "di periode ini."
++        )
++
+     if total == 0:
+         if result.get("total_gabungan", 0) > 0:
+             lines.append(f"Tidak ada daftar antrean untuk status '{result.get('status_filter')}'.")
+diff --git a/handlers/attack_list/handler.py b/handlers/attack_list/handler.py
+index 613c926..d962368 100644
+--- a/handlers/attack_list/handler.py
++++ b/handlers/attack_list/handler.py
+@@ -59,8 +59,6 @@ class AttackListHandler(BaseHandler):
+             dataframe = result["history"]
+         elif result["mode"] == "all":
+             dataframe = result["raw_df"]
+-        elif result["mode"] == "conversion_summary_rejected":
+-            dataframe = result["units"]
+         else:
+             dataframe = result["units"]
+ 
+diff --git a/handlers/attack_list/parser.py b/handlers/attack_list/parser.py
+index 66445a4..d8b24c1 100644
+--- a/handlers/attack_list/parser.py
++++ b/handlers/attack_list/parser.py
+@@ -175,17 +175,17 @@ class AttackListParams(BaseParams):
+     period: Optional[ParsedPeriod] = None  # mode=="history" ATAU expired_mode=True
+     expired_mode: bool = False
+     wants_summary_only: bool = False
+-    # KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): kalau kata trigger
++    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kalau kata trigger
+     # konversi/history disebut BERSAMA "expired", TIDAK beralih ke
+     # mode="history" (attack_list_history tidak punya konsep "expired PADA
+     # bulan lampau", dan JOIN runtime ke attack_list untuk itu semantiknya
+     # tidak akurat -- lihat brief investigasi Room 7a). Tetap mode="list" +
+-    # expired_mode=True (populasi SAMA PERSIS dengan "attack list ...
+-    # expired ..."), TIDAK berubah. Flag ini menandakan Service harus
+-    # MENOLAK dengan pesan penjelasan -- BUKAN menghitung angka konversi
+-    # apa pun -- karena "expired" adalah status akhir final (unit
+-    # gugur/hangus dari follow-up), sehingga "konversi dari unit yang
+-    # sudah expired" secara konsep tidak valid ditanya (mirip peran
++    # expired_mode=True (populasi berbasis batas_tcare semata, pending+
++    # converted sekaligus -- lihat AttackListRepository.find()). Flag ini
++    # menandakan Formatter harus MENONJOLKAN angka konversi di pesan --
++    # BUKAN lagi pesan penolakan (Opsi A dibatalkan) -- karena definisi
++    # "expired" sudah diperbaiki, pertanyaan "berapa converted dari yang
++    # expired" sekarang valid dan bisa dijawab angka nyata (mirip peran
+     # wants_summary_only sebagai preseden pola flag).
+     wants_conversion_summary: bool = False
+ 
+@@ -441,18 +441,18 @@ class AttackListParser(BaseParser):
+             wants_history or program is not None or _wants_history_natural(t) or wants_history_px
+         )
+ 
+-        # KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): begitu kata "expired"
++        # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): begitu kata "expired"
+         # disebut BERSAMA kata trigger konversi/history, jangan pernah
+         # beralih ke mode="history" -- attack_list_history tidak mengenal
+         # konsep "expired" sama sekali (kolom batas_tcare cuma ada di
+         # attack_list, dan JOIN runtime secara semantik tidak akurat untuk
+         # histori bulan lampau, lihat brief investigasi Room 7a). Tetap
+-        # mode="list" + expired_mode=True (TIDAK berubah), tandai
+-        # wants_conversion_summary=True sebagai sinyal Service untuk
+-        # MENOLAK dengan pesan penjelasan -- "expired" adalah status akhir
+-        # final (unit gugur/hangus dari follow-up), "konversi dari unit
+-        # yang sudah expired" secara konsep tidak valid ditanya, BUKAN
+-        # angka 0 ataupun angka lain.
++        # mode="list" + expired_mode=True (TIDAK berubah, populasi sekarang
++        # pending+converted sekaligus -- lihat AttackListRepository.find()),
++        # tandai wants_conversion_summary=True sebagai sinyal Formatter
++        # untuk MENONJOLKAN angka konversi di pesan -- BUKAN lagi pesan
++        # penolakan (Opsi A DIBATALKAN setelah klarifikasi ulang definisi
++        # "expired" dengan Wahyu).
+         wants_conversion_summary = False
+         if wants_history and expired_mode:
+             wants_history = False
+diff --git a/handlers/attack_list/service.py b/handlers/attack_list/service.py
+index 7658c11..764a3af 100644
+--- a/handlers/attack_list/service.py
++++ b/handlers/attack_list/service.py
+@@ -69,13 +69,13 @@ class AttackListServiceParams:
+     period: Optional[ParsedPeriod] = None
+     expired_mode: bool = False
+     wants_summary_only: bool = False
+-    # KEPUTUSAN FINAL ROOM 0 (2026-07-24): kombinasi kata trigger konversi/
+-    # history + "expired" TIDAK menghasilkan angka konversi apa pun --
+-    # "expired" adalah status akhir final (unit gugur/hangus dari follow-up),
+-    # sehingga "konversi dari unit yang sudah expired" adalah pertanyaan yang
+-    # secara konsep tidak valid, bukan angka 0. Flag ini jadi sinyal untuk
+-    # tampilkan pesan penjelasan (bukan hitung apa pun) saat True bersama
+-    # expired_mode=True juga True.
++    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kombinasi kata trigger
++    # konversi/history + "expired" SEKARANG bermakna dan bisa dijawab
++    # dengan ANGKA -- definisi "expired" sudah diperbaiki jadi berbasis
++    # batas_tcare semata (pending+converted sekaligus, BUKAN lagi exclude
++    # status). Flag ini jadi sinyal ke Formatter untuk MENONJOLKAN angka
++    # konversi di pesan (bukan menampilkan daftar unit penuh, dan BUKAN
++    # lagi pesan penolakan seperti revisi Opsi A sebelumnya).
+     wants_conversion_summary: bool = False
+ 
+ 
+@@ -86,31 +86,21 @@ class AttackListService(BaseService):
+     def execute(self, params: AttackListServiceParams) -> dict:
+         if params.mode == "history":
+             return self._execute_history(params)
+-        # KEPUTUSAN FINAL ROOM 0 (2026-07-24): kombinasi kata trigger
+-        # konversi/history + "expired" TIDAK PERNAH menghasilkan angka
+-        # konversi -- "expired" adalah status akhir final (unit sudah
+-        # gugur dari follow-up), pertanyaan "konversi yang expired" secara
+-        # konsep tidak valid. Tolak SEBELUM query apa pun dijalankan (tidak
+-        # perlu attack_list_history maupun attack_list sama sekali untuk
+-        # kasus ini) -- cukup pesan penjelasan, response tetap sukses
+-        # (INT008_OK), bukan error/exception.
+-        if params.wants_conversion_summary and params.expired_mode:
+-            return self._execute_conversion_summary_rejected(params)
++        # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kombinasi kata
++        # trigger konversi/history + "expired" SEKARANG bermakna dan bisa
++        # dijawab dengan ANGKA -- karena definisi "expired" sudah diubah
++        # jadi berbasis batas_tcare semata (pending+converted sekaligus,
++        # lihat AttackListRepository.find()), bukan lagi exclude status.
++        # TIDAK ADA lagi cabang penolakan (Opsi A, room7a-expired-history-
++        # validated, DIBATALKAN) -- cukup jalankan _execute_list() seperti
++        # biasa (total_converted/total_pending sudah otomatis benar di
++        # sana), wants_conversion_summary hanya jadi sinyal Formatter untuk
++        # MENONJOLKAN angka konversi di pesan, bukan menampilkan daftar
++        # unit penuh.
+         if not params.expired_mode and params.source is None:
+             return self._execute_all_summary(params)
+         return self._execute_list(params)
+ 
+-    def _execute_conversion_summary_rejected(self, params: AttackListServiceParams) -> dict:
+-        """Kombinasi 'konversi/histori/history' + 'expired' -- ditolak
+-        dengan pesan penjelasan (Opsi A, KEPUTUSAN FINAL ROOM 0). Tidak
+-        menyentuh repository sama sekali."""
+-        return {
+-            "mode": "conversion_summary_rejected",
+-            "source_filter": params.source,
+-            "sa_filter": params.sa_terakhir,
+-            "units": pd.DataFrame(),
+-        }
+-
+     def _execute_all_summary(self, params: AttackListServiceParams) -> dict:
+         """View 'Attack List Semua' -- source tidak disebut, bukan
+         expired_mode. Source of truth tunggal: tabel attack_list, filter
+@@ -281,6 +271,11 @@ class AttackListService(BaseService):
+             "total_pending": total_pending,
+             "summary_per_source": summary_per_source_df,
+             "sa_filter": params.sa_terakhir,
++            # KEPUTUSAN ROOM 0 (REVISI KEDUA): sinyal ke Formatter untuk
++            # menonjolkan angka konversi di pesan (bukan menampilkan
++            # daftar unit penuh) -- dipicu saat kata trigger konversi/
++            # history disebut bersama expired_mode=True.
++            "wants_conversion_summary": params.wants_conversion_summary,
+         }
+ 
+     def _execute_history(self, params: AttackListServiceParams) -> dict:
+diff --git a/repositories/attack_list_repository.py b/repositories/attack_list_repository.py
+index 164c429..5443b79 100644
+--- a/repositories/attack_list_repository.py
++++ b/repositories/attack_list_repository.py
+@@ -51,15 +51,34 @@ class AttackListRepository(BaseRepository):
+         (parameterized), bukan f-string interpolation.
+ 
+         `expired_mode`/`period_yyyymm`: mode filter TERPISAH dari `status`,
+-        persis logic legacy (`tools/attack_list.py::_query_attack_list`) --
+-        "expired" BUKAN nilai status, tapi filter berbasis `batas_tcare`:
++        filter berbasis `batas_tcare`:
+ 
+             WHERE strftime('%Y-%m', batas_tcare) = <period_yyyymm>
+-              AND status NOT IN ('converted', 'resolved')
++              AND status != 'resolved'
+ 
+         Kalau `expired_mode=True`, parameter `status` diabaikan (expired_mode
+-        menggantikan filter status, bukan ditambahkan ke atasnya -- sama
+-        seperti legacy: expired_mode dan status='pending' saling eksklusif).
++        menggantikan filter status, bukan ditambahkan ke atasnya).
++
++        KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24, dikonfirmasi ulang
++        langsung dengan Wahyu): "expired bulan X" = SEMUA unit yang
++        batas_tcare-nya jatuh di bulan X, PENDING + CONVERTED SEKALIGUS --
++        TIDAK dikecualikan berdasarkan status (BEDA dari perilaku lama yang
++        exclude 'converted' juga). Konsisten dengan pola project ini:
++        `resolved` SELALU dikecualikan total di mana pun (lihat
++        `find_for_summary_all()`, komentar service.py "resolved
++        DIKECUALIKAN TOTAL"), tapi `converted` sekarang TETAP masuk hitungan
++        expired (dulu ikut dibuang, ini yang DIPERBAIKI).
++
++        Definisi LAMA (`status NOT IN ('converted', 'resolved')`) DIHAPUS
++        sengaja -- root cause bug "konversi dari yang expired selalu tidak
++        bisa dijawab" adalah karena populasi expired lama SELALU 100%
++        pending (converted sudah dibuang duluan di level SQL ini), membuat
++        pertanyaan "berapa yang converted dari yang expired" secara
++        struktural mustahil dijawab dengan angka apa pun. Riwayat lengkap:
++        Opsi A (tolak kombinasi konversi+expired, room7a-expired-history-
++        validated) SEMPAT disetujui untuk definisi LAMA, tapi setelah
++        klarifikasi ulang Wahyu, definisi "expired" itu sendiri yang perlu
++        diubah, BUKAN cara menjawab kombinasi konversi+expired.
+         """
+         conditions = []
+         params: list = []
+@@ -73,7 +92,12 @@ class AttackListRepository(BaseRepository):
+                 raise ValueError("period_yyyymm wajib diisi kalau expired_mode=True")
+             conditions.append("strftime('%Y-%m', batas_tcare) = ?")
+             params.append(period_yyyymm)
+-            conditions.append("status NOT IN ('converted', 'resolved')")
++            # KEPUTUSAN ROOM 0 (REVISI KEDUA): populasi expired = pending +
++            # converted sekaligus, HANYA resolved yang dikecualikan
++            # (konsisten dengan pola "resolved dikecualikan total" di
++            # seluruh project ini) -- BEDA dari perilaku lama yang juga
++            # mengecualikan converted.
++            conditions.append("status != 'resolved'")
+         elif status is not None:
+             conditions.append("status = ?")
+             params.append(status)
+diff --git a/tests/test_room6_handlers.py b/tests/test_room6_handlers.py
+index 7f8f3f5..729b15b 100644
+--- a/tests/test_room6_handlers.py
++++ b/tests/test_room6_handlers.py
+@@ -386,58 +386,97 @@ def test_attack_list_handler_not_matched_by_unrelated_text(router):
+ 
+ 
+ def test_attack_list_handler_expired_mode_end_to_end(router):
++    """KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): populasi expired
++    bulan 2026-07 sekarang 2 unit (id=1 TCARE pending + id=3 CRM
++    converted) -- BUKAN 1 seperti definisi lama yang exclude converted."""
+     result = router.route("attack list expired bulan 2026-07")
+     assert result.code == "INT008_OK"
+     assert result.summary["expired_mode"] is True
+-    assert result.summary["total_unit"] == 1
++    assert result.summary["total_unit"] == 2
+     assert "EXPIRED" in result.message
+ 
+ 
+-def test_attack_list_handler_expired_mode_excludes_converted(router):
++def test_attack_list_handler_expired_mode_includes_converted(router):
++    """RIWAYAT: test ini DULU bernama
++    test_attack_list_handler_expired_mode_excludes_converted dan mengecek
++    HAL SEBALIKNYA. KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24,
++    dikonfirmasi ulang langsung Wahyu): "expired bulan X" = pending +
++    converted sekaligus (berbasis batas_tcare semata) -- unit converted
++    SEKARANG HARUS ikut muncul, bukan dikecualikan lagi."""
+     result = router.route("attack list expired bulan 2026-07")
+-    assert "MHCRM00000002" not in result.dataframe["no_rangka"].values
++    assert "MHCRM00000002" in result.dataframe["no_rangka"].values
+ 
+ 
+ def test_attack_list_handler_expired_mode_combined_with_source(router):
++    """Filter source=TCARE mengecualikan unit CRM converted (id=3) --
++    bukan karena expired_mode, tapi karena filter source memang berbeda."""
+     result = router.route("attack list tcare expired bulan 2026-07")
+     assert result.code == "INT008_OK"
+     assert result.summary["total_unit"] == 1
+     assert result.summary["filter_source"] == "TCARE"
+ 
+ 
+-# -- Room 7a: bug "expired diabaikan di mode history" (Opsi A, KEPUTUSAN
+-# FINAL ROOM 0 2026-07-24) --
+-
+-def test_room7a_konversi_expired_combo_returns_explanation_not_number(router):
+-    """DoD: 'konversi attack list tcare expired ...' TIDAK menghitung
+-    angka konversi apa pun -- 'expired' adalah status akhir final (unit
+-    gugur dari follow-up), jadi kombinasi ini ditolak dengan pesan
+-    penjelasan, response code TETAP sukses (INT008_OK, bukan error)."""
++# -- Room 7a: bug "expired diabaikan di mode history" (KEPUTUSAN ROOM 0
++# REVISI KEDUA, 2026-07-24: definisi "expired" diperbaiki jadi berbasis
++# batas_tcare semata -- pending+converted sekaligus. Opsi A/penolakan
++# (room7a-expired-history-validated) DIBATALKAN, kombinasi konversi+
++# expired sekarang menjawab dengan ANGKA, bukan pesan penolakan.) --
++
++def test_room7a_konversi_expired_combo_returns_real_conversion_number(router):
++    """RIWAYAT: test ini DULU bernama
++    test_room7a_konversi_expired_combo_returns_explanation_not_number dan
++    mengecek HAL SEBALIKNYA (pesan penolakan, TIDAK ada total_converted).
++    KEPUTUSAN ROOM 0 (REVISI KEDUA): definisi 'expired' diperbaiki jadi
++    berbasis batas_tcare semata (pending+converted sekaligus) -- kombinasi
++    'konversi ... expired ...' SEKARANG bermakna dan HARUS menjawab
++    dengan angka nyata dari populasi expired itu, tetap mode='list' (BUKAN
++    'history', dan BUKAN 'conversion_summary_rejected' yang sudah
++    dihapus)."""
+     result = router.route("konversi attack list tcare expired bulan 2026-07")
+     assert result.code == "INT008_OK"
+     assert result.success is True
+-    assert "expired" in result.message.lower()
+-    assert "gugur" in result.message.lower() or "tidak berlaku" in result.message.lower()
+-    # Bukan pesan histori/angka konversi biasa
+-    assert "total_konversi" not in result.summary
+-    assert result.summary["mode"] == "conversion_summary_rejected"
+-
+-
+-def test_room7a_konversi_expired_combo_does_not_touch_history_table(router):
+-    """DoD: TIDAK ada query ke attack_list_history untuk kombinasi ini --
+-    dibuktikan lewat dataframe kosong (bukan hasil find_history()) dan
+-    mode summary yang eksplisit menandakan jalur ditolak sebelum sampai
+-    ke repository history sama sekali."""
++    assert result.summary["mode"] == "list"
++    assert result.summary["wants_conversion_summary"] is True
++    # Populasi TCARE expired 2026-07 di fixture cuma id=1 (pending) --
++    # source=TCARE tidak overlap dengan id=3 (CRM, converted).
++    assert result.summary["total_converted"] == 0
++    assert result.summary["total_gabungan"] == 1
++    assert "Sudah konversi" in result.message
++
++
++def test_room7a_konversi_expired_combo_with_actual_converted_unit(router):
++    """Kasus dengan unit converted BENERAN ikut ke populasi expired --
++    tanpa filter source, populasi expired 2026-07 mencakup id=1 (TCARE,
++    pending) DAN id=3 (CRM, converted). 'konversi ... expired ...' HARUS
++    melaporkan 1 unit converted dari 2 unit populasi, BUKAN 0."""
++    result = router.route("konversi attack list expired bulan 2026-07")
++    assert result.code == "INT008_OK"
++    assert result.summary["mode"] == "list"
++    assert result.summary["wants_conversion_summary"] is True
++    assert result.summary["total_converted"] == 1
++    assert result.summary["total_gabungan"] == 2
++    assert "Sudah konversi: 1 dari 2" in result.message
++
++
++def test_room7a_konversi_expired_combo_uses_attack_list_not_history_table(router):
++    """DoD (revisi): populasi kombinasi ini berasal dari attack_list
++    (mode list biasa, expired_mode=True) -- BUKAN attack_list_history.
++    Dibuktikan lewat dataframe yang berisi kolom khas attack_list
++    (batas_tcare), bukan kolom khas attack_list_history (tgl_konversi
++    sebagai kolom utama tanpa batas_tcare)."""
+     result = router.route("konversi attack list tcare expired bulan 2026-07")
+-    assert result.dataframe.empty
++    assert "batas_tcare" in result.dataframe.columns
+ 
+ 
+-def test_room7a_histori_keyword_expired_combo_also_rejected(router):
++def test_room7a_histori_keyword_expired_combo_also_returns_number(router):
+     """Regresi: kata 'histori'/'history' (bukan cuma 'konversi') + expired
+-    juga harus ditolak dengan pola yang sama."""
+-    result = router.route("histori attack list tcare expired bulan 2026-07")
++    juga harus menjawab dengan angka nyata, pola yang sama seperti
++    'konversi'."""
++    result = router.route("histori attack list expired bulan 2026-07")
+     assert result.code == "INT008_OK"
+-    assert result.summary["mode"] == "conversion_summary_rejected"
++    assert result.summary["mode"] == "list"
++    assert result.summary["wants_conversion_summary"] is True
++    assert result.summary["total_converted"] == 1
+ 
+ 
+ def test_room7a_konversi_without_expired_still_uses_history_unaffected(router):
+@@ -450,13 +489,17 @@ def test_room7a_konversi_without_expired_still_uses_history_unaffected(router):
+ 
+ 
+ def test_room7a_expired_mode_list_without_konversi_keyword_unaffected(router):
+-    """Regresi wajib PASS: mode list 'expired' TANPA kata trigger
+-    konversi/history sama sekali TIDAK terpengaruh oleh perubahan Room 7a."""
++    """Regresi wajib PASS terhadap perubahan Room 7a (bukan revisi
++    definisi expired REVISI KEDUA -- itu SUDAH sengaja mengubah angka
++    total_unit dari 1 jadi 2, lihat
++    test_attack_list_handler_expired_mode_end_to_end). Poin test ini:
++    wants_conversion_summary tetap False saat kata konversi/history TIDAK
++    disebut sama sekali."""
+     result = router.route("attack list tcare expired bulan 2026-07")
+     assert result.code == "INT008_OK"
+     assert result.summary["mode"] == "list"
+     assert result.summary["expired_mode"] is True
+-    assert result.summary["total_unit"] == 1
++    assert result.summary["wants_conversion_summary"] is False
+ 
+ 
+ # -- INT012 TCARE Web Status --
+diff --git a/tests/test_room6_repositories.py b/tests/test_room6_repositories.py
+index 4fd4a4a..2c58800 100644
+--- a/tests/test_room6_repositories.py
++++ b/tests/test_room6_repositories.py
+@@ -113,21 +113,61 @@ def test_attack_list_find_history_sa_null_rows_not_matched(db_path):
+ 
+ 
+ def test_attack_list_find_expired_mode_filters_by_batas_tcare_month(db_path):
+-    """expired_mode: filter berbasis strftime batas_tcare, BUKAN status --
+-    meniru logic tools/attack_list.py legacy (dikonfirmasi Wahyu)."""
++    """expired_mode: filter berbasis strftime batas_tcare -- BUKAN lagi
++    exclude status (lihat riwayat perubahan di test di bawah). Bulan
++    2026-07 punya 2 baris fixture: id=1 (TCARE, pending) DAN id=3 (CRM,
++    converted) -- keduanya sekarang masuk populasi expired."""
+     repo = AttackListRepository(db_path)
+     df = repo.find(expired_mode=True, period_yyyymm="2026-07")
+-    assert len(df) == 1
+-    assert df.iloc[0]["no_rangka"] == "MHTCARE0000001"
+-
++    assert len(df) == 2
++    assert set(df["no_rangka"]) == {"MHTCARE0000001", "MHCRM00000002"}
++
++
++def test_attack_list_find_expired_mode_includes_converted_and_pending(db_path):
++    """KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24, dikonfirmasi ulang
++    langsung Wahyu): "expired bulan X" = SEMUA unit dengan batas_tcare
++    jatuh di bulan X, PENDING + CONVERTED SEKALIGUS -- TIDAK dikecualikan
++    berdasarkan status.
++
++    RIWAYAT: test ini DULU bernama
++    test_attack_list_find_expired_mode_excludes_converted dan mengecek
++    HAL SEBALIKNYA (unit converted HARUS dikecualikan). Root cause bug:
++    dengan definisi lama, populasi "expired" selalu 100% pending (unit
++    converted dibuang di level SQL), membuat pertanyaan "berapa yang
++    converted dari yang expired" (INT010) secara struktural mustahil
++    dijawab dengan angka apa pun -- selalu 0, bukan karena data kosong.
++    Setelah klarifikasi ulang dengan Wahyu, definisi "expired" itu
++    sendiri diperbaiki jadi murni berbasis waktu (batas_tcare), BUKAN
++    exclude status -- konsisten dengan cara mode list non-expired
++    menghitung total gabungan (converted+pending)."""
++    repo = AttackListRepository(db_path)
++    df = repo.find(expired_mode=True, period_yyyymm="2026-07")
++    # Row 3 (CRM, batas_tcare 2026-07-20, status='converted') SEKARANG
++    # HARUS IKUT MUNCUL -- kebalikan dari perilaku lama.
++    assert "MHCRM00000002" in df["no_rangka"].values
++    converted_row = df[df["no_rangka"] == "MHCRM00000002"].iloc[0]
++    assert converted_row["status"] == "converted"
++
++
++def test_attack_list_find_expired_mode_still_excludes_resolved(db_path):
++    """`resolved` TETAP dikecualikan total -- konsisten dengan pola
++    project ini di mana pun (mis. find_for_summary_all()), TIDAK berubah
++    oleh revisi definisi expired. Insert baris resolved khusus test ini
++    (tidak mengubah fixtures_room6.py bersama)."""
++    import sqlite3
++    conn = sqlite3.connect(db_path)
++    conn.execute(
++        "INSERT INTO attack_list (id, source, no_rangka, sa_terakhir, "
++        "segment_rfm, program_id, program, status, batas_tcare) "
++        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
++        (99, "TCARE", "MHTCARE0000099", "AGN", "Champions", 10, "PROG A", "resolved", "2026-07-25"),
++    )
++    conn.commit()
++    conn.close()
+ 
+-def test_attack_list_find_expired_mode_excludes_converted(db_path):
+-    """Row 3 (CRM, batas_tcare 2026-07-20) status='converted' -- HARUS
+-    dikecualikan meski bulan batas_tcare-nya cocok (status NOT IN
+-    ('converted','resolved'))."""
+     repo = AttackListRepository(db_path)
+     df = repo.find(expired_mode=True, period_yyyymm="2026-07")
+-    assert "MHCRM00000002" not in df["no_rangka"].values
++    assert "MHTCARE0000099" not in df["no_rangka"].values
+ 
+ 
+ def test_attack_list_find_expired_mode_different_month(db_path):
+@@ -144,6 +184,9 @@ def test_attack_list_find_expired_mode_requires_period(db_path):
+ 
+ 
+ def test_attack_list_find_expired_mode_combined_with_source(db_path):
++    """Filter source TCARE + expired 2026-07 -- hanya id=1 (TCARE), id=3
++    (CRM converted) TIDAK ikut karena source berbeda. Membuktikan filter
++    source tetap bekerja independen dari perubahan definisi status."""
+     repo = AttackListRepository(db_path)
+     df = repo.find(source="TCARE", expired_mode=True, period_yyyymm="2026-07")
+     assert len(df) == 1

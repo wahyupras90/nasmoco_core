@@ -51,15 +51,34 @@ class AttackListRepository(BaseRepository):
         (parameterized), bukan f-string interpolation.
 
         `expired_mode`/`period_yyyymm`: mode filter TERPISAH dari `status`,
-        persis logic legacy (`tools/attack_list.py::_query_attack_list`) --
-        "expired" BUKAN nilai status, tapi filter berbasis `batas_tcare`:
+        filter berbasis `batas_tcare`:
 
             WHERE strftime('%Y-%m', batas_tcare) = <period_yyyymm>
-              AND status NOT IN ('converted', 'resolved')
+              AND status != 'resolved'
 
         Kalau `expired_mode=True`, parameter `status` diabaikan (expired_mode
-        menggantikan filter status, bukan ditambahkan ke atasnya -- sama
-        seperti legacy: expired_mode dan status='pending' saling eksklusif).
+        menggantikan filter status, bukan ditambahkan ke atasnya).
+
+        KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24, dikonfirmasi ulang
+        langsung dengan Wahyu): "expired bulan X" = SEMUA unit yang
+        batas_tcare-nya jatuh di bulan X, PENDING + CONVERTED SEKALIGUS --
+        TIDAK dikecualikan berdasarkan status (BEDA dari perilaku lama yang
+        exclude 'converted' juga). Konsisten dengan pola project ini:
+        `resolved` SELALU dikecualikan total di mana pun (lihat
+        `find_for_summary_all()`, komentar service.py "resolved
+        DIKECUALIKAN TOTAL"), tapi `converted` sekarang TETAP masuk hitungan
+        expired (dulu ikut dibuang, ini yang DIPERBAIKI).
+
+        Definisi LAMA (`status NOT IN ('converted', 'resolved')`) DIHAPUS
+        sengaja -- root cause bug "konversi dari yang expired selalu tidak
+        bisa dijawab" adalah karena populasi expired lama SELALU 100%
+        pending (converted sudah dibuang duluan di level SQL ini), membuat
+        pertanyaan "berapa yang converted dari yang expired" secara
+        struktural mustahil dijawab dengan angka apa pun. Riwayat lengkap:
+        Opsi A (tolak kombinasi konversi+expired, room7a-expired-history-
+        validated) SEMPAT disetujui untuk definisi LAMA, tapi setelah
+        klarifikasi ulang Wahyu, definisi "expired" itu sendiri yang perlu
+        diubah, BUKAN cara menjawab kombinasi konversi+expired.
         """
         conditions = []
         params: list = []
@@ -73,7 +92,12 @@ class AttackListRepository(BaseRepository):
                 raise ValueError("period_yyyymm wajib diisi kalau expired_mode=True")
             conditions.append("strftime('%Y-%m', batas_tcare) = ?")
             params.append(period_yyyymm)
-            conditions.append("status NOT IN ('converted', 'resolved')")
+            # KEPUTUSAN ROOM 0 (REVISI KEDUA): populasi expired = pending +
+            # converted sekaligus, HANYA resolved yang dikecualikan
+            # (konsisten dengan pola "resolved dikecualikan total" di
+            # seluruh project ini) -- BEDA dari perilaku lama yang juga
+            # mengecualikan converted.
+            conditions.append("status != 'resolved'")
         elif status is not None:
             conditions.append("status = ?")
             params.append(status)

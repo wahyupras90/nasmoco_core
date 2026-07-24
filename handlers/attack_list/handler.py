@@ -59,8 +59,6 @@ class AttackListHandler(BaseHandler):
             dataframe = result["history"]
         elif result["mode"] == "all":
             dataframe = result["raw_df"]
-        elif result["mode"] == "conversion_summary_rejected":
-            dataframe = result["units"]
         else:
             dataframe = result["units"]
 

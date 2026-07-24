@@ -4,13 +4,6 @@ handlers/attack_list/formatter.py — INT008 Attack List (ADR006)
 
 
 def build_summary(result: dict) -> dict:
-    if result["mode"] == "conversion_summary_rejected":
-        return {
-            "mode": "conversion_summary_rejected",
-            "filter_source": result.get("source_filter"),
-            "filter_sa": result.get("sa_filter"),
-        }
-
     if result["mode"] == "history":
         return {
             "mode": "history",
@@ -67,27 +60,11 @@ def build_summary(result: dict) -> dict:
         "total_converted": result.get("total_converted", 0),
         "total_pending": result.get("total_pending", 0),
         "jumlah_per_source": per_source,
+        "wants_conversion_summary": result.get("wants_conversion_summary", False),
     }
 
 
 def format_message(result: dict) -> str:
-    if result["mode"] == "conversion_summary_rejected":
-        # KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): "expired" adalah
-        # status akhir final (unit gugur/hangus dari follow-up) --
-        # "konversi dari unit yang sudah expired" secara konsep tidak
-        # valid ditanya, jadi TIDAK menghitung angka apa pun (bukan 0).
-        lines = [
-            "Unit yang sudah expired tidak dihitung sebagai konversi — "
-            "begitu lewat batas waktu, statusnya dianggap gugur/tidak "
-            "berlaku lagi.",
-        ]
-        source_hint = result.get("source_filter") or "[source]"
-        lines.append(
-            f"Gunakan 'attack list {source_hint} expired [periode]' untuk "
-            "melihat daftar unit yang sudah gugur tersebut."
-        )
-        return "\n".join(lines)
-
     if result["mode"] == "history":
         label = result["bulan_label"]
         assumed = "" if result["period_is_explicit"] else " (diasumsikan)"
@@ -133,15 +110,34 @@ def format_message(result: dict) -> str:
         mode_label = "Attack List"
 
     lines = [f"{mode_label}{filter_text}"]
-    
-    # Menyeragamkan format respons dengan breakdown konversi/pending
-    if not result.get("expired_mode") and "total_converted" in result:
+
+    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): breakdown converted/
+    # pending SEKARANG juga ditampilkan untuk mode expired -- populasi
+    # expired sekarang bisa berisi campuran keduanya (definisi baru:
+    # berbasis batas_tcare semata, bukan exclude status), jadi breakdown
+    # ini penting supaya user langsung lihat komposisinya tanpa menerka
+    # (sebelumnya sengaja disembunyikan untuk expired karena breakdown
+    # itu percuma -- selalu 0 converted dengan definisi lama).
+    if "total_converted" in result:
         gabungan = result["total_gabungan"]
         conv = result["total_converted"]
         pend = result["total_pending"]
         lines.append(f"Total unit: {gabungan:,} ({conv:,} converted, {pend:,} pending)")
     else:
         lines.append(f"Total unit: {total:,}")
+
+    # KEPUTUSAN ROOM 0 (REVISI KEDUA, 2026-07-24): kata trigger konversi/
+    # history disebut BERSAMA "expired" -> tonjolkan angka konversi
+    # secara eksplisit (bukan lagi pesan penolakan seperti Opsi A yang
+    # DIBATALKAN). Populasi tetap sama seperti mode list expired biasa
+    # (baris "Total unit" di atas), baris ini cuma menegaskan makna
+    # pertanyaan yang ditanyakan user.
+    if result.get("wants_conversion_summary") and "total_converted" in result:
+        lines.append(
+            f"Sudah konversi: {result['total_converted']:,} dari "
+            f"{result['total_gabungan']:,} unit yang batas waktunya jatuh "
+            "di periode ini."
+        )
 
     if total == 0:
         if result.get("total_gabungan", 0) > 0:
