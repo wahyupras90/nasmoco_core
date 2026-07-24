@@ -42,6 +42,7 @@ class AttackListHandler(BaseHandler):
             period=parsed.period,
             expired_mode=parsed.expired_mode,
             wants_summary_only=parsed.wants_summary_only,
+            wants_conversion_summary=parsed.wants_conversion_summary,
         )
 
         try:
@@ -58,6 +59,8 @@ class AttackListHandler(BaseHandler):
             dataframe = result["history"]
         elif result["mode"] == "all":
             dataframe = result["raw_df"]
+        elif result["mode"] == "conversion_summary_rejected":
+            dataframe = result["units"]
         else:
             dataframe = result["units"]
 

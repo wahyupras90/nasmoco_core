@@ -4,6 +4,13 @@ handlers/attack_list/formatter.py — INT008 Attack List (ADR006)
 
 
 def build_summary(result: dict) -> dict:
+    if result["mode"] == "conversion_summary_rejected":
+        return {
+            "mode": "conversion_summary_rejected",
+            "filter_source": result.get("source_filter"),
+            "filter_sa": result.get("sa_filter"),
+        }
+
     if result["mode"] == "history":
         return {
             "mode": "history",
@@ -64,6 +71,23 @@ def build_summary(result: dict) -> dict:
 
 
 def format_message(result: dict) -> str:
+    if result["mode"] == "conversion_summary_rejected":
+        # KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): "expired" adalah
+        # status akhir final (unit gugur/hangus dari follow-up) --
+        # "konversi dari unit yang sudah expired" secara konsep tidak
+        # valid ditanya, jadi TIDAK menghitung angka apa pun (bukan 0).
+        lines = [
+            "Unit yang sudah expired tidak dihitung sebagai konversi — "
+            "begitu lewat batas waktu, statusnya dianggap gugur/tidak "
+            "berlaku lagi.",
+        ]
+        source_hint = result.get("source_filter") or "[source]"
+        lines.append(
+            f"Gunakan 'attack list {source_hint} expired [periode]' untuk "
+            "melihat daftar unit yang sudah gugur tersebut."
+        )
+        return "\n".join(lines)
+
     if result["mode"] == "history":
         label = result["bulan_label"]
         assumed = "" if result["period_is_explicit"] else " (diasumsikan)"

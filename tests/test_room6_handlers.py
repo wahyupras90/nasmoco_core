@@ -405,6 +405,60 @@ def test_attack_list_handler_expired_mode_combined_with_source(router):
     assert result.summary["filter_source"] == "TCARE"
 
 
+# -- Room 7a: bug "expired diabaikan di mode history" (Opsi A, KEPUTUSAN
+# FINAL ROOM 0 2026-07-24) --
+
+def test_room7a_konversi_expired_combo_returns_explanation_not_number(router):
+    """DoD: 'konversi attack list tcare expired ...' TIDAK menghitung
+    angka konversi apa pun -- 'expired' adalah status akhir final (unit
+    gugur dari follow-up), jadi kombinasi ini ditolak dengan pesan
+    penjelasan, response code TETAP sukses (INT008_OK, bukan error)."""
+    result = router.route("konversi attack list tcare expired bulan 2026-07")
+    assert result.code == "INT008_OK"
+    assert result.success is True
+    assert "expired" in result.message.lower()
+    assert "gugur" in result.message.lower() or "tidak berlaku" in result.message.lower()
+    # Bukan pesan histori/angka konversi biasa
+    assert "total_konversi" not in result.summary
+    assert result.summary["mode"] == "conversion_summary_rejected"
+
+
+def test_room7a_konversi_expired_combo_does_not_touch_history_table(router):
+    """DoD: TIDAK ada query ke attack_list_history untuk kombinasi ini --
+    dibuktikan lewat dataframe kosong (bukan hasil find_history()) dan
+    mode summary yang eksplisit menandakan jalur ditolak sebelum sampai
+    ke repository history sama sekali."""
+    result = router.route("konversi attack list tcare expired bulan 2026-07")
+    assert result.dataframe.empty
+
+
+def test_room7a_histori_keyword_expired_combo_also_rejected(router):
+    """Regresi: kata 'histori'/'history' (bukan cuma 'konversi') + expired
+    juga harus ditolak dengan pola yang sama."""
+    result = router.route("histori attack list tcare expired bulan 2026-07")
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "conversion_summary_rejected"
+
+
+def test_room7a_konversi_without_expired_still_uses_history_unaffected(router):
+    """Regresi wajib PASS: 'konversi' TANPA kata 'expired' TIDAK berubah
+    sama sekali -- tetap mode history seperti sebelum fix Room 7a."""
+    result = router.route("konversi attack list tcare bulan 2026-06")
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "history"
+    assert result.summary["total_konversi"] == 1
+
+
+def test_room7a_expired_mode_list_without_konversi_keyword_unaffected(router):
+    """Regresi wajib PASS: mode list 'expired' TANPA kata trigger
+    konversi/history sama sekali TIDAK terpengaruh oleh perubahan Room 7a."""
+    result = router.route("attack list tcare expired bulan 2026-07")
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "list"
+    assert result.summary["expired_mode"] is True
+    assert result.summary["total_unit"] == 1
+
+
 # -- INT012 TCARE Web Status --
 
 def test_tcare_web_status_handler_ok(router):

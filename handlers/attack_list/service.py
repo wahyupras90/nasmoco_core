@@ -69,6 +69,14 @@ class AttackListServiceParams:
     period: Optional[ParsedPeriod] = None
     expired_mode: bool = False
     wants_summary_only: bool = False
+    # KEPUTUSAN FINAL ROOM 0 (2026-07-24): kombinasi kata trigger konversi/
+    # history + "expired" TIDAK menghasilkan angka konversi apa pun --
+    # "expired" adalah status akhir final (unit gugur/hangus dari follow-up),
+    # sehingga "konversi dari unit yang sudah expired" adalah pertanyaan yang
+    # secara konsep tidak valid, bukan angka 0. Flag ini jadi sinyal untuk
+    # tampilkan pesan penjelasan (bukan hitung apa pun) saat True bersama
+    # expired_mode=True juga True.
+    wants_conversion_summary: bool = False
 
 
 class AttackListService(BaseService):
@@ -78,9 +86,30 @@ class AttackListService(BaseService):
     def execute(self, params: AttackListServiceParams) -> dict:
         if params.mode == "history":
             return self._execute_history(params)
+        # KEPUTUSAN FINAL ROOM 0 (2026-07-24): kombinasi kata trigger
+        # konversi/history + "expired" TIDAK PERNAH menghasilkan angka
+        # konversi -- "expired" adalah status akhir final (unit sudah
+        # gugur dari follow-up), pertanyaan "konversi yang expired" secara
+        # konsep tidak valid. Tolak SEBELUM query apa pun dijalankan (tidak
+        # perlu attack_list_history maupun attack_list sama sekali untuk
+        # kasus ini) -- cukup pesan penjelasan, response tetap sukses
+        # (INT008_OK), bukan error/exception.
+        if params.wants_conversion_summary and params.expired_mode:
+            return self._execute_conversion_summary_rejected(params)
         if not params.expired_mode and params.source is None:
             return self._execute_all_summary(params)
         return self._execute_list(params)
+
+    def _execute_conversion_summary_rejected(self, params: AttackListServiceParams) -> dict:
+        """Kombinasi 'konversi/histori/history' + 'expired' -- ditolak
+        dengan pesan penjelasan (Opsi A, KEPUTUSAN FINAL ROOM 0). Tidak
+        menyentuh repository sama sekali."""
+        return {
+            "mode": "conversion_summary_rejected",
+            "source_filter": params.source,
+            "sa_filter": params.sa_terakhir,
+            "units": pd.DataFrame(),
+        }
 
     def _execute_all_summary(self, params: AttackListServiceParams) -> dict:
         """View 'Attack List Semua' -- source tidak disebut, bukan

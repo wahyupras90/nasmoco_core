@@ -1,0 +1,522 @@
+diff --git a/handlers/attack_list/formatter.py b/handlers/attack_list/formatter.py
+index e260df4..3c3feea 100644
+--- a/handlers/attack_list/formatter.py
++++ b/handlers/attack_list/formatter.py
+@@ -12,6 +12,7 @@ def build_summary(result: dict) -> dict:
+             "periode_diasumsikan": not result["period_is_explicit"],
+             "filter_source": result.get("source_filter"),
+             "filter_program": result.get("program_filter"),
++            "filter_sa": result.get("sa_filter"),
+             "total_tercatat": result["total_tercatat"],
+             "total_konversi": result["total_konversi"],
+             "program_breakdown": result.get("program_breakdown", []),
+@@ -75,6 +76,8 @@ def format_message(result: dict) -> str:
+             lines.append(f"Filter source: {result['source_filter']}")
+         if result.get("program_filter"):
+             lines.append(f"Filter program: {result['program_filter']}")
++        if result.get("sa_filter"):
++            lines.append(f"Filter SA (konversi): {result['sa_filter']}")
+         # INT010: breakdown per program CRM (dinamis, DISTINCT dari data)
+         program_breakdown = result.get("program_breakdown") or []
+         if program_breakdown:
+diff --git a/handlers/attack_list/parser.py b/handlers/attack_list/parser.py
+index 0c14a1a..84d3233 100644
+--- a/handlers/attack_list/parser.py
++++ b/handlers/attack_list/parser.py
+@@ -81,6 +81,16 @@ _STATUS_KEYWORDS = {
+ 
+ _HISTORY_TRIGGER_WORDS = ("konversi", "histori", "history")
+ 
++# INT010 (extend PX): kata pemicu KHUSUS untuk fallback nama PX -- SENGAJA
++# hanya "konversi", TIDAK termasuk "histori"/"history". Ditemukan lewat
++# testing nyata (bukan asumsi): "history <nama PX>" ambigu dengan
++# HistoryServiceHandler/History TCARE (yang MEMANG berhak atas kata
++# "history"/"histori", priority sama di router -- tie-break menang
++# duluan karena registrasi lebih awal). "konversi" tidak overlap sama
++# sekali dengan domain manapun (dicek: tidak ada handler lain yang pakai
++# kata ini), jadi aman jadi satu-satunya pemicu untuk PX.
++_PX_HISTORY_TRIGGER_WORDS = ("konversi",)
++
+ # INT010: kata "datang" saja terlalu generik (bisa soal WIP/servis lain di
+ # luar domain attack list) -- HANYA dianggap trigger history kalau muncul
+ # BERSAMA salah satu penanda domain attack list (source/program/kata
+@@ -141,6 +151,14 @@ _DYNAMIC_SOURCE_IGNORE_WORDS = set(
+         "dari", "untuk", "data", "yg", "yang", "di", "ke", "ada",
+         "sa", "service", "advisor",  # PENAMBAHAN BUGFIX: Abaikan kata SA sebagai source
+         "berapa", "datang", "sudah", "belum",  # INT010: trigger natural, bukan source
++        # BUGFIX (INT010 PX, ditemukan lewat test manual chatbot production):
++        # kata "program" sendiri (tanpa angka setelahnya, lolos dari
++        # _PROGRAM_ID_REGEX yang cuma hapus "program 11") tidak pernah
++        # ter-strip -- membuat "program Panggil Pulang At Risk" (nama CRM
++        # tanpa tanda hubung, gagal match whitelist VALID_PROGRAM) salah
++        # tertangkap sebagai source PX "program Panggil Pulang" (kata
++        # "program" ikut kebawa masuk).
++        "program",
+     ]
+ )
+ 
+@@ -331,12 +349,13 @@ class AttackListParser(BaseParser):
+             re.search(rf"\b{key}\b", t) for key in _SOURCE_MAP
+         ):
+             return True
+-        # INT010 (extend): kata pemicu konversi/histori/history + nama
++        # INT010 (extend): kata pemicu KHUSUS "konversi" (bukan
++        # histori/history, lihat _PX_HISTORY_TRIGGER_WORDS) + nama
+         # program PX custom (fallback SETELAH whitelist CRM & source
+         # statis di atas tidak match) -- kata pemicu tetap WAJIB ada
+         # (ADR028: nama PX sendirian, tanpa kata pemicu, TIDAK boleh
+         # match, karena nama PX bebas/tidak whitelist seperti CRM).
+-        if any(w in t for w in _HISTORY_TRIGGER_WORDS):
++        if any(w in t for w in _PX_HISTORY_TRIGGER_WORDS):
+             px_source = _extract_dynamic_source(text)
+             if px_source:
+                 return True
+@@ -391,13 +410,15 @@ class AttackListParser(BaseParser):
+         #      langsung, ATAU kata "datang" + konteks domain -- keduanya
+         #      dianggap niat history meski periode tidak eksplisit
+         #      (default ke bulan berjalan, sama seperti expired_mode)
+-        #   3. natural PX (extend): kata pemicu konversi/histori/history +
+-        #      source ketemu via fallback PX dinamis (source SUDAH
+-        #      dihitung di atas, whitelist CRM->statis->PX, urutan wajib
+-        #      dikonfirmasi Room 0) -- kata pemicu tetap disyaratkan
+-        #      (ADR028), nama PX sendirian tanpa itu TIDAK masuk sini.
++        #   3. natural PX (extend): kata pemicu KHUSUS "konversi" (BUKAN
++        #      histori/history -- itu domain History Service/History
++        #      TCARE, ditemukan bentrok lewat testing nyata) + source
++        #      ketemu via fallback PX dinamis (source SUDAH dihitung di
++        #      atas, whitelist CRM->statis->PX, urutan wajib dikonfirmasi
++        #      Room 0) -- kata pemicu tetap disyaratkan (ADR028), nama PX
++        #      sendirian tanpa itu TIDAK masuk sini.
+         wants_history_px = (
+-            any(w in t for w in _HISTORY_TRIGGER_WORDS)
++            any(w in t for w in _PX_HISTORY_TRIGGER_WORDS)
+             and source is not None
+             and source not in _SOURCE_MAP.values()
+             and program is None
+@@ -411,7 +432,21 @@ class AttackListParser(BaseParser):
+         )
+ 
+         if wants_history:
+-            return AttackListParams(mode="history", source=source, program=program, period=period)
++            # BUGFIX (INT010, ditemukan lewat test manual production):
++            # sa_terakhir sebelumnya TIDAK disertakan di sini sama sekali
++            # -- kata "sa bdr" di query "konversi ... sa bdr" berhasil
++            # diekstrak (baris di atas) tapi DIBUANG diam-diam, filter SA
++            # tidak pernah diterapkan (silent failure). Sekarang
++            # disertakan -- KEPUTUSAN ROOM 0: untuk mode history, field
++            # ini dipetakan ke filter `sa_konversi` (SA yang closing
++            # transaksi riil), BUKAN `attack_list.sa_terakhir` (SA
++            # assignment attack list, konsep BEDA, dipakai mode list
++            # saja) -- pemetaan ke kolom yang benar terjadi di
++            # handler.py/service.py, bukan di sini.
++            return AttackListParams(
++                mode="history", source=source, program=program,
++                sa_terakhir=sa_terakhir, period=period,
++            )
+ 
+         return AttackListParams(
+             mode="list",
+diff --git a/handlers/attack_list/service.py b/handlers/attack_list/service.py
+index 9449adc..42fb715 100644
+--- a/handlers/attack_list/service.py
++++ b/handlers/attack_list/service.py
+@@ -261,23 +261,35 @@ class AttackListService(BaseService):
+         # ("Panggil Pulang - At Risk"). Tanpa .title() filter tidak akan
+         # pernah match (ditemukan lewat test, bukan asumsi).
+         safe_program = params.program.title() if params.program else None
++
++        # KEPUTUSAN ROOM 0 (filter SA di mode history): sa_terakhir di sini
++        # dipetakan ke kolom `sa_konversi` -- SA yang BENAR-BENAR menangani
++        # transaksi servis riil saat unit convert (diisi evaluator_konversi.py
++        # dari unitmasuk pada WO TERAKHIR dalam window evaluasi), BUKAN
++        # `attack_list.sa_terakhir` (SA assignment attack list, konsep BEDA,
++        # cuma dipakai mode "list"). Sama pola .title() dengan program/segment
++        # -- whitelist VALID_SA disimpan uppercase, konsisten dengan data
++        # (tidak perlu .title(), sa_konversi diasumsikan tersimpan uppercase
++        # sama seperti attack_list.sa_terakhir -- lihat catatan test).
++        safe_sa = params.sa_terakhir
++
+         history_df = self.repo.find_history(
+             bulan=bulan_str, source=params.source, program=safe_program,
++            sa=safe_sa,
+         )
+ 
+-        total_konversi = 0
+-        if not history_df.empty and "tgl_konversi" in history_df.columns:
+-            total_konversi = int(history_df["tgl_konversi"].notna().sum())
+-
+         # INT010: breakdown per "program" -- generik per kolom `program`
+         # apa adanya (bisa berisi nama program CRM, nama pekerjaan CR7,
+         # dst -- KOREKSI dari asumsi awal "NULL selain CRM", ditemukan
+         # lewat test manual production bahwa CR7 juga terisi). Dihitung
+-        # dari history_df LENGKAP (SEBELUM difilter converted-saja di
+-        # bawah), supaya breakdown & summary tetap merepresentasikan
+-        # seluruh populasi yang match filter, bukan cuma subset yang
+-        # ditampilkan. Dinamis dari DISTINCT data, TIDAK hardcode daftar
+-        # tetap (pelajaran dari bug PX mode "Semua").
++        # dari history_df LENGKAP-SETELAH-FILTER-SA (filter SA memang
++        # MEMPERSEMPIT populasi yang dihitung -- KEPUTUSAN ROOM 0, beda
++        # dari filter program/source yang murni penyaringan tampilan).
++        # Dinamis dari DISTINCT data, TIDAK hardcode daftar tetap.
++        total_konversi = 0
++        if not history_df.empty and "tgl_konversi" in history_df.columns:
++            total_konversi = int(history_df["tgl_konversi"].notna().sum())
++
+         program_breakdown = []
+         if not history_df.empty and "program" in history_df.columns:
+             crm_history_df = history_df[history_df["program"].notna()]
+@@ -293,12 +305,12 @@ class AttackListService(BaseService):
+         # KEPUTUSAN ROOM 0 (mode history vs mode list): kata "konversi"
+         # di query BUKAN cuma trigger masuk mode history -- juga berarti
+         # user cuma mau LIHAT yang sudah convert, bukan seluruh populasi
+-        # yang match filter source/program/periode. Jadi dataframe yang
++        # yang match filter source/program/periode/SA. Jadi dataframe yang
+         # DIKEMBALIKAN (untuk tampilan CLI & export Excel) difilter ke
+         # "converted saja" DI SINI, SETELAH summary/breakdown di atas
+-        # selesai dihitung dari data lengkap -- urutan ini wajib, supaya
+-        # total_tercatat/total_konversi/program_breakdown TIDAK ikut
+-        # menyusut gara-gara dataframe sudah difilter duluan.
++        # selesai dihitung -- urutan wajib, supaya total_tercatat/
++        # total_konversi/program_breakdown TIDAK ikut menyusut gara-gara
++        # dataframe sudah difilter duluan.
+         #
+         # Mode "list" (attack_list <source>, _execute_list()) TIDAK
+         # disentuh sama sekali -- tetap tampilkan semua baris (pending +
+@@ -316,6 +328,7 @@ class AttackListService(BaseService):
+             "period_is_explicit": params.period.is_explicit,
+             "source_filter": params.source,
+             "program_filter": safe_program,
++            "sa_filter": safe_sa,
+             "history": converted_df,
+             "total_tercatat": int(len(history_df)),
+             "total_konversi": total_konversi,
+diff --git a/repositories/attack_list_repository.py b/repositories/attack_list_repository.py
+index 5f181dc..164c429 100644
+--- a/repositories/attack_list_repository.py
++++ b/repositories/attack_list_repository.py
+@@ -224,6 +224,7 @@ class AttackListRepository(BaseRepository):
+         bulan: str,
+         source: Optional[str] = None,
+         program: Optional[str] = None,
++        sa: Optional[str] = None,
+     ) -> pd.DataFrame:
+         """Baca attack_list_history untuk statistik konversi per bulan.
+ 
+@@ -231,12 +232,24 @@ class AttackListRepository(BaseRepository):
+         sudah konversi' -- HANYA baca kolom status yang sudah dihitung
+         evaluator_konversi.py, tidak menghitung ulang (BR026).
+ 
+-        `program` (INT010): filter granular untuk breakdown per program
+-        CRM (P1-P4). Kolom `program` di attack_list_history NULL untuk
+-        source TCARE/CR7/PX (tidak granular by design, dikonfirmasi Room 0)
+-        -- filter ini hanya bermakna kalau dikombinasikan dengan
+-        source="CRM" atau dibiarkan tanpa source sekaligus sebut nama
+-        program (nama program CRM unik, tidak overlap TCARE/CR7/PX).
++        `program` (INT010): filter granular per program/kategori. KOREKSI
++        (ditemukan lewat test manual production): kolom `program` di
++        attack_list_history TIDAK selalu NULL di luar CRM -- untuk CR7
++        misalnya berisi nama pekerjaan, bukan NULL (label breakdown tetap
++        generik "per program" apa pun sumbernya, sesuai keputusan Wahyu).
++        Filter ini bermakna untuk source mana pun yang kolom `program`-nya
++        terisi, tidak terbatas ke CRM saja.
++
++        `sa` (INT010, keputusan Room 0): filter berdasarkan kolom
++        `sa_konversi` -- SA yang BENAR-BENAR menangani transaksi servis
++        riil saat unit itu convert (diambil evaluator_konversi.py dari
++        unitmasuk pada kunjungan/WO TERAKHIR dalam window evaluasi),
++        BUKAN `attack_list.sa_terakhir` (SA assignment attack list, beda
++        konsep, dipakai mode `list`, TIDAK disentuh di sini). Baris dengan
++        `sa_konversi IS NULL` (data lama belum sempat di-backfill
++        evaluator, ATAU unit belum convert sama sekali) TIDAK match
++        filter SA apa pun -- diperlakukan sebagai "belum diketahui
++        SA-nya", bukan error.
+         """
+         conditions = ["bulan = ?"]
+         params: list = [bulan]
+@@ -249,6 +262,10 @@ class AttackListRepository(BaseRepository):
+             conditions.append("program = ?")
+             params.append(program)
+ 
++        if sa is not None:
++            conditions.append("sa_konversi = ?")
++            params.append(sa)
++
+         sql = f"""
+             SELECT *
+             FROM attack_list_history
+diff --git a/tests/fixtures_room6.py b/tests/fixtures_room6.py
+index 768797b..d81f064 100644
+--- a/tests/fixtures_room6.py
++++ b/tests/fixtures_room6.py
+@@ -64,7 +64,8 @@ def make_temp_db() -> str:
+             tgl_konversi TEXT,
+             bulan_konversi TEXT,
+             segment_rfm TEXT,
+-            program TEXT
++            program TEXT,
++            sa_konversi TEXT
+         );
+ 
+         CREATE TABLE tcare_web_vehicle (
+@@ -131,16 +132,20 @@ def make_temp_db() -> str:
+     # sama (Panggil Pulang - At Risk vs Aktivasi New & Potential).
+     conn.executemany(
+         "INSERT INTO attack_list_history (id, bulan, source, no_rangka, "
+-        "tgl_konversi, bulan_konversi, segment_rfm, program) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
++        "tgl_konversi, bulan_konversi, segment_rfm, program, sa_konversi) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         [
+-            (1, "2026-06", "TCARE", "MHTCARE0000001", "2026-06-15", "2026-06", "Champions", None),
+-            (2, "2026-06", "CRM", "MHCRM00000001", None, None, "At Risk", "Panggil Pulang - At Risk"),
+-            (3, "2026-06", "CRM", "MHCRM00000003", "2026-06-20", "2026-06", "At Risk", "Panggil Pulang - At Risk"),
+-            (4, "2026-06", "CRM", "MHCRM00000004", None, None, "New", "Aktivasi New & Potential"),
++            (1, "2026-06", "TCARE", "MHTCARE0000001", "2026-06-15", "2026-06", "Champions", None, "AGN"),
++            (2, "2026-06", "CRM", "MHCRM00000001", None, None, "At Risk", "Panggil Pulang - At Risk", None),
++            (3, "2026-06", "CRM", "MHCRM00000003", "2026-06-20", "2026-06", "At Risk", "Panggil Pulang - At Risk", "ARIS"),
++            (4, "2026-06", "CRM", "MHCRM00000004", None, None, "New", "Aktivasi New & Potential", None),
+             # PX (INT010 extend): program NULL by design (tidak granular),
+             # source = nama sheet Excel custom.
+-            (5, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000001", "2026-06-18", "2026-06", "Loyal", None),
+-            (6, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000002", None, None, "Loyal", None),
++            # id=5: sa_konversi NULL sengaja -- simulasi "data lama belum
++            # di-backfill evaluator_konversi.py" (dikonfirmasi Room 0:
++            # JANGAN anggap bug, harus diperlakukan sebagai "belum
++            # diketahui SA-nya", tidak match filter SA apa pun).
++            (5, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000001", "2026-06-18", "2026-06", "Loyal", None, None),
++            (6, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000002", None, None, "Loyal", None, None),
+         ],
+     )
+ 
+diff --git a/tests/test_room6_handlers.py b/tests/test_room6_handlers.py
+index 25a0b4f..be0d69e 100644
+--- a/tests/test_room6_handlers.py
++++ b/tests/test_room6_handlers.py
+@@ -130,31 +130,28 @@ def test_attack_list_handler_history_mode(router):
+ 
+ 
+ def test_attack_list_handler_history_dataframe_filtered_to_converted_only(router):
+-    """KEPUTUSAN ROOM 0: kata "konversi" di query bukan cuma trigger mode
+-    history -- juga berarti user cuma mau lihat yang SUDAH convert.
+-    Dataframe yang dikembalikan (tampilan CLI & export Excel) HARUS
+-    hanya berisi baris converted, TAPI summary (total_tercatat,
+-    total_konversi) tetap dihitung dari SELURUH populasi yang match
+-    filter (tidak ikut menyusut)."""
++    """KEPUTUSAN ROOM 0: dataframe yang DIKEMBALIKAN di mode history
++    difilter ke 'converted saja' (tgl_konversi IS NOT NULL), SETELAH
++    summary/total_tercatat/total_konversi dihitung dari populasi
++    LENGKAP (bukan populasi yang sudah dipersempit). Jumlah baris
++    dataframe HARUS SAMA PERSIS dengan angka total_konversi di summary,
++    BUKAN dengan total_tercatat."""
+     result = router.route("attack list konversi bulan 2026-06")
+-    # DoD: jumlah baris dataframe HARUS SAMA DENGAN total_konversi di
+-    # summary (bukti filter benar, bukan asal potong angka lain).
+     assert len(result.dataframe) == result.summary["total_konversi"] == 3
+-    # Summary total_tercatat TIDAK ikut menyusut -- tetap populasi penuh (6).
+-    assert result.summary["total_tercatat"] == 6
+-    # Semua baris di dataframe yang tersisa harus punya tgl_konversi terisi.
++    assert result.summary["total_tercatat"] == 6  # populasi lengkap, TIDAK ikut menyusut
+     assert result.dataframe["tgl_konversi"].notna().all()
+ 
+ 
+-def test_attack_list_handler_list_mode_dataframe_not_filtered_by_converted(router):
+-    """Regresi wajib (DoD Room 0): mode 'list' biasa (TANPA kata
+-    konversi) TIDAK disentuh sama sekali -- tetap tampilkan SEMUA baris
+-    (pending + converted), tidak ikut difilter ke converted-saja."""
++def test_attack_list_handler_list_mode_not_filtered_to_converted_only(router):
++    """Regresi wajib: mode 'list' (attack_list <source>, TANPA kata
++    konversi/histori/history) TIDAK disentuh oleh keputusan filter
++    converted-saja -- tetap tampilkan semua baris (pending + converted),
++    sesuai perilaku lama Room 6."""
+     result = router.route("attack list tcare")
+     assert result.summary["mode"] == "list"
+-    # Mode list baca dari attack_list (current state), bukan history --
+-    # pastikan tidak ada filter tgl_konversi yang ikut merembet ke sini.
+-    assert "tgl_konversi" not in result.dataframe.columns or len(result.dataframe) >= 1
++    # Mode list pakai tabel attack_list (bukan attack_list_history),
++    # tidak ada kolom tgl_konversi -- dataframe tidak difilter sama sekali.
++    assert len(result.dataframe) >= 1
+ 
+ 
+ # -- INT010: breakdown/filter per program CRM --
+@@ -166,16 +163,10 @@ def test_int010_history_program_breakdown_dynamic(router):
+     breakdown = result.summary["program_breakdown"]
+     programs = {row["program"] for row in breakdown}
+     assert programs == {"Panggil Pulang - At Risk", "Aktivasi New & Potential"}
+-    # Panggil Pulang - At Risk: 2 baris (id=2 pending, id=3 converted) --
+-    # breakdown TETAP dari populasi lengkap, tidak ikut menyusut oleh
+-    # filter dataframe converted-saja (KEPUTUSAN ROOM 0).
++    # Panggil Pulang - At Risk: 2 baris (id=2 pending, id=3 converted)
+     pp_at_risk = next(r for r in breakdown if r["program"] == "Panggil Pulang - At Risk")
+     assert pp_at_risk["total"] == 2
+     assert pp_at_risk["konversi"] == 1
+-    # Dataframe yang dikembalikan HANYA berisi baris converted (3 total,
+-    # gabungan semua source: 1 TCARE + 1 CRM Panggil Pulang + 1 PX).
+-    assert len(result.dataframe) == 3
+-    assert result.dataframe["tgl_konversi"].notna().all()
+ 
+ 
+ def test_int010_history_filter_program_spesifik(router):
+@@ -192,6 +183,63 @@ def test_int010_history_filter_program_spesifik(router):
+     assert result.summary["total_tercatat"] == 1
+ 
+ 
++# -- INT010 (Keputusan Room 0): filter SA di mode history via sa_konversi --
++
++def test_int010_history_filter_sa_uses_sa_konversi_not_sa_terakhir(router):
++    """KEPUTUSAN ROOM 0: filter SA di mode history/konversi dipetakan ke
++    kolom `sa_konversi` (SA yang closing transaksi riil), BUKAN
++    `attack_list.sa_terakhir` (SA assignment attack list -- konsep BEDA,
++    dipakai mode list saja).
++
++    Fixture: id=1 (TCARE, converted) sa_konversi='AGN'; id=3 (CRM
++    Panggil Pulang - At Risk, converted) sa_konversi='ARIS'. Filter
++    'sa agn' HARUS hanya menangkap baris id=1, bukan campur dgn baris
++    lain yang kebetulan attack_list.sa_terakhir-nya AGN (jika ada)."""
++    result = router.route("attack list konversi bulan 2026-06 sa agn")
++    assert result.code == "INT008_OK"
++    assert result.summary["mode"] == "history"
++    assert result.summary["filter_sa"] == "AGN"
++    # DoD: summary HARUS menyempit ke SA yang diminta (BEDA dari filter
++    # "converted saja" yang summary tetap dari populasi lengkap) --
++    # hanya 1 baris (id=1) yang match sa_konversi='AGN'.
++    assert result.summary["total_tercatat"] == 1
++    assert result.summary["total_konversi"] == 1
++    assert len(result.dataframe) == 1
++    assert result.dataframe.iloc[0]["no_rangka"] == "MHTCARE0000001"
++
++
++def test_int010_history_filter_sa_different_sa_narrows_to_different_row(router):
++    """Filter SA lain (ARIS) menangkap baris berbeda (id=3, CRM), bukan
++    baris yang sama seperti filter AGN -- bukti filter benar-benar
++    membedakan per SA, bukan asal lolos semua."""
++    result = router.route("attack list konversi bulan 2026-06 sa aris")
++    assert result.summary["filter_sa"] == "ARIS"
++    assert result.summary["total_tercatat"] == 1
++    assert result.dataframe.iloc[0]["no_rangka"] == "MHCRM00000003"
++
++
++def test_int010_history_filter_sa_null_data_not_matched(router):
++    """DoD: baris dengan sa_konversi IS NULL (data lama belum
++    di-backfill evaluator ATAU belum convert) TIDAK match filter SA
++    apa pun -- diperlakukan sebagai "belum diketahui SA-nya", BUKAN
++    error/crash. Fixture: id=2, 4, 5, 6 semua sa_konversi=NULL -- tidak
++    ada satu pun yang muncul di hasil filter SA manapun."""
++    result = router.route("attack list konversi bulan 2026-06 sa agn")
++    no_rangka_hasil = set(result.dataframe["no_rangka"])
++    assert "MHCRM00000001" not in no_rangka_hasil  # id=2, sa_konversi NULL
++    assert "MHPX00000001" not in no_rangka_hasil   # id=5, sa_konversi NULL
++
++
++def test_int010_list_mode_sa_filter_unaffected_by_history_change(router):
++    """Regresi wajib (DoD Room 0): mode 'list' (attack_list <source> sa
++    <nama>) TIDAK berubah sama sekali -- tetap pakai
++    attack_list.sa_terakhir seperti sebelumnya, TIDAK ikut dipetakan ke
++    sa_konversi."""
++    result = router.route("attack list tcare sa agn")
++    assert result.summary["mode"] == "list"
++    assert result.summary["filter_sa"] == "AGN"
++
++
+ def test_int010_natural_trigger_konversi_program_without_attack_list_keyword(router):
+     """'konversi program X' (tanpa kata 'attack list') tetap harus match
+     dan masuk mode history -- kebutuhan trigger natural INT010."""
+diff --git a/tests/test_room6_parsers.py b/tests/test_room6_parsers.py
+index 6704aa1..8ea59f2 100644
+--- a/tests/test_room6_parsers.py
++++ b/tests/test_room6_parsers.py
+@@ -162,6 +162,17 @@ def test_int010_px_history_trigger_extracts_source_no_program():
+     assert p.program is None
+ 
+ 
++def test_int010_history_mode_no_longer_drops_sa_terakhir():
++    """BUG DITEMUKAN & DIPERBAIKI (test manual chatbot production): sebelum
++    fix, sa_terakhir berhasil diekstrak (_extract_sa) tapi DIBUANG diam-diam
++    saat return AttackListParams(mode="history", ...) -- kata "sa bdr" di
++    query "konversi ... sa bdr" silently ignored, filter tidak pernah
++    diterapkan. Sekarang sa_terakhir disertakan untuk SEMUA mode."""
++    p = parser.parse("konversi T-CARE LITE FREE 2LT bulan juli sa bdr")
++    assert p.mode == "history"
++    assert p.sa_terakhir == "BDR"
++
++
+ def test_int010_px_history_trigger_requires_trigger_word():
+     """DoD #3 (ADR028): nama PX sendirian, TANPA kata pemicu apa pun,
+     TIDAK boleh match -- beda dari whitelist CRM yang sudah pasti unik/
+@@ -170,6 +181,21 @@ def test_int010_px_history_trigger_requires_trigger_word():
+     assert parser.match("T-CARE LITE FREE 2LT bulan juli") is False
+ 
+ 
++def test_int010_px_history_trigger_word_is_konversi_only_not_history():
++    """BUG DITEMUKAN & DIPERBAIKI (test manual dengan chatbot production):
++    kata pemicu PX untuk mode history HARUS HANYA "konversi", BUKAN
++    "histori"/"history" -- sebelum fix, "history <nama PX> bulan juli"
++    match attack_list.match()==True, TAPI di router kalimat ini KALAH
++    tie-break dari HistoryServiceHandler (priority sama, registrasi
++    lebih dulu), sehingga query salah dijawab "data tidak ditemukan" oleh
++    domain yang salah alih-alih statistik konversi attack list. "konversi"
++    tidak overlap dengan handler manapun, aman jadi satu-satunya pemicu."""
++    assert parser.match("history T-CARE LITE FREE 2LT bulan juli") is False
++    assert parser.match("histori T-CARE LITE FREE 2LT bulan juli") is False
++    # "konversi" TETAP harus match (regresi negatif untuk fix ini)
++    assert parser.match("konversi T-CARE LITE FREE 2LT bulan juli") is True
++
++
+ def test_int010_crm_whitelist_wins_over_px_fallback_same_trigger_word():
+     """DoD #2: dibuktikan eksplisit (bukan asumsi) -- whitelist VALID_PROGRAM
+     (CRM) dicek LEBIH DULU dari fallback PX, meski sama-sama dipicu kata
+@@ -188,6 +214,27 @@ def test_int010_px_name_not_matching_whitelist_falls_back_correctly():
+     assert p.source == "Percepat"
+ 
+ 
++def test_int010_word_program_not_leaked_into_px_source():
++    """BUG DITEMUKAN & DIPERBAIKI (test manual dengan chatbot production):
++    kata "program" (tanpa angka setelahnya, TIDAK match
++    _PROGRAM_ID_REGEX yang cuma menghapus pola "program 11") sebelumnya
++    tidak pernah masuk _DYNAMIC_SOURCE_IGNORE_WORDS, sehingga kalau nama
++    program CRM ditulis TANPA tanda hubung ("Panggil Pulang At Risk",
++    bukan "Panggil Pulang - At Risk") -- gagal match whitelist
++    VALID_PROGRAM (exact match), fallback ke ekstraksi PX, dan kata
++    "program" ikut kebawa masuk jadi bagian source
++    ("program Panggil Pulang", bukan "Panggil Pulang" saja). Diperbaiki
++    dengan menambahkan "program" ke _DYNAMIC_SOURCE_IGNORE_WORDS."""
++    p = parser.parse("konversi program Panggil Pulang At Risk bulan juli")
++    assert p.source == "Panggil Pulang"
++    assert "program" not in p.source.lower()
++    # Regresi negatif: program_id literal ("program 11") tetap harus
++    # berfungsi seperti biasa, tidak terganggu oleh fix ini.
++    p2 = parser.parse("attack list program 11")
++    assert p2.program_id == 11
++    assert p2.source is None
++
++
+ def test_int010_px_list_mode_unaffected_by_history_trigger_extension():
+     """DoD #4: mode 'list' PX (fungsi lama Room 6) tidak berubah sama
+     sekali oleh penambahan jalur trigger history natural PX."""
+diff --git a/tests/test_room6_repositories.py b/tests/test_room6_repositories.py
+index c8c416b..4fd4a4a 100644
+--- a/tests/test_room6_repositories.py
++++ b/tests/test_room6_repositories.py
+@@ -94,6 +94,24 @@ def test_attack_list_find_history_combines_source_and_program(db_path):
+     assert df.iloc[0]["no_rangka"] == "MHCRM00000004"
+ 
+ 
++def test_attack_list_find_history_filters_by_sa_konversi(db_path):
++    """KEPUTUSAN ROOM 0: filter `sa` di find_history() memakai kolom
++    `sa_konversi` (SA closing transaksi riil), BUKAN attack_list.sa_terakhir.
++    Fixture: id=1 (TCARE) sa_konversi='AGN'."""
++    repo = AttackListRepository(db_path)
++    df = repo.find_history(bulan="2026-06", sa="AGN")
++    assert len(df) == 1
++    assert df.iloc[0]["no_rangka"] == "MHTCARE0000001"
++
++
++def test_attack_list_find_history_sa_null_rows_not_matched(db_path):
++    """DoD: baris sa_konversi IS NULL (data lama belum di-backfill/belum
++    convert) TIDAK match filter sa apa pun -- bukan error."""
++    repo = AttackListRepository(db_path)
++    df = repo.find_history(bulan="2026-06", sa="AGN")
++    assert "MHCRM00000001" not in df["no_rangka"].values  # id=2, sa_konversi NULL
++
++
+ def test_attack_list_find_expired_mode_filters_by_batas_tcare_month(db_path):
+     """expired_mode: filter berbasis strftime batas_tcare, BUKAN status --
+     meniru logic tools/attack_list.py legacy (dikonfirmasi Wahyu)."""

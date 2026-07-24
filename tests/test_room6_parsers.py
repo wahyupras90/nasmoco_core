@@ -310,6 +310,66 @@ def test_attack_list_match_missing_list_keyword_reproduces_known_gap():
     assert parser.match("berapa tcare expired bulan ini") is False
 
 
+# -- Room 7a: bug "expired diabaikan di mode history" --
+# KEPUTUSAN FINAL ROOM 0 (2026-07-24, Opsi A): kata trigger konversi/
+# history + "expired" TIDAK PERNAH masuk mode="history" -- "expired"
+# adalah status akhir final (unit gugur dari follow-up), jadi
+# "konversi dari unit yang sudah expired" secara konsep tidak valid.
+# Parser HARUS tetap mode="list" (expired_mode=True, TIDAK berubah dari
+# perilaku lama) dan menandai wants_conversion_summary=True sebagai
+# sinyal ke Service untuk menolak dengan pesan penjelasan (BUKAN
+# menghitung angka apa pun).
+
+def test_room7a_expired_plus_konversi_stays_mode_list_not_history():
+    """BUG DITEMUKAN & DIPERBAIKI: sebelumnya 'konversi attack list tcare
+    expired juli sa bdr' salah masuk mode='history' (attack_list_history
+    tidak mengenal konsep expired sama sekali, kata 'expired' diam-diam
+    diabaikan). Sekarang WAJIB tetap mode='list'."""
+    p = parser.parse("konversi attack list tcare expired juli sa bdr")
+    assert p.mode == "list"
+    assert p.expired_mode is True
+    assert p.wants_conversion_summary is True
+
+
+def test_room7a_expired_plus_history_keyword_stays_mode_list():
+    """Sama seperti kata 'konversi', kata 'histori'/'history' + 'expired'
+    juga TIDAK boleh masuk mode history."""
+    p = parser.parse("histori attack list tcare expired juli")
+    assert p.mode == "list"
+    assert p.expired_mode is True
+    assert p.wants_conversion_summary is True
+
+
+def test_room7a_expired_plus_px_konversi_trigger_stays_mode_list():
+    """Regresi khusus: trigger PX history ('konversi' + nama source
+    dinamis, lihat _PX_HISTORY_TRIGGER_WORDS) juga HARUS tunduk pada
+    aturan yang sama -- begitu 'expired' disebut, tetap mode='list',
+    bukan mode='history' untuk source PX apa pun."""
+    p = parser.parse("konversi T-CARE LITE FREE 2LT expired juli")
+    assert p.mode == "list"
+    assert p.expired_mode is True
+    assert p.wants_conversion_summary is True
+
+
+def test_room7a_konversi_without_expired_still_mode_history():
+    """Regresi wajib PASS: 'konversi' TANPA kata 'expired' TIDAK berubah
+    -- tetap mode='history' seperti sebelum fix ini (room7-int010-full-
+    validated)."""
+    p = parser.parse("konversi attack list tcare juli sa bdr")
+    assert p.mode == "history"
+    assert p.wants_conversion_summary is False
+
+
+def test_room7a_expired_without_konversi_still_mode_list_unaffected():
+    """Regresi wajib PASS: mode list 'expired' TANPA kata trigger
+    konversi/history sama sekali TIDAK terpengaruh -- wants_conversion_summary
+    tetap False, perilaku sama persis seperti sebelum fix ini."""
+    p = parser.parse("attack list tcare expired juli sa bdr")
+    assert p.mode == "list"
+    assert p.expired_mode is True
+    assert p.wants_conversion_summary is False
+
+
 # -- TCAREWebStatusParser --
 
 web_status_parser = TCAREWebStatusParser()
