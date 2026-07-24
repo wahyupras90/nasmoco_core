@@ -64,7 +64,8 @@ def make_temp_db() -> str:
             tgl_konversi TEXT,
             bulan_konversi TEXT,
             segment_rfm TEXT,
-            program TEXT
+            program TEXT,
+            sa_konversi TEXT
         );
 
         CREATE TABLE tcare_web_vehicle (
@@ -131,16 +132,20 @@ def make_temp_db() -> str:
     # sama (Panggil Pulang - At Risk vs Aktivasi New & Potential).
     conn.executemany(
         "INSERT INTO attack_list_history (id, bulan, source, no_rangka, "
-        "tgl_konversi, bulan_konversi, segment_rfm, program) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "tgl_konversi, bulan_konversi, segment_rfm, program, sa_konversi) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
-            (1, "2026-06", "TCARE", "MHTCARE0000001", "2026-06-15", "2026-06", "Champions", None),
-            (2, "2026-06", "CRM", "MHCRM00000001", None, None, "At Risk", "Panggil Pulang - At Risk"),
-            (3, "2026-06", "CRM", "MHCRM00000003", "2026-06-20", "2026-06", "At Risk", "Panggil Pulang - At Risk"),
-            (4, "2026-06", "CRM", "MHCRM00000004", None, None, "New", "Aktivasi New & Potential"),
+            (1, "2026-06", "TCARE", "MHTCARE0000001", "2026-06-15", "2026-06", "Champions", None, "AGN"),
+            (2, "2026-06", "CRM", "MHCRM00000001", None, None, "At Risk", "Panggil Pulang - At Risk", None),
+            (3, "2026-06", "CRM", "MHCRM00000003", "2026-06-20", "2026-06", "At Risk", "Panggil Pulang - At Risk", "ARIS"),
+            (4, "2026-06", "CRM", "MHCRM00000004", None, None, "New", "Aktivasi New & Potential", None),
             # PX (INT010 extend): program NULL by design (tidak granular),
             # source = nama sheet Excel custom.
-            (5, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000001", "2026-06-18", "2026-06", "Loyal", None),
-            (6, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000002", None, None, "Loyal", None),
+            # id=5: sa_konversi NULL sengaja -- simulasi "data lama belum
+            # di-backfill evaluator_konversi.py" (dikonfirmasi Room 0:
+            # JANGAN anggap bug, harus diperlakukan sebagai "belum
+            # diketahui SA-nya", tidak match filter SA apa pun).
+            (5, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000001", "2026-06-18", "2026-06", "Loyal", None, None),
+            (6, "2026-06", "T-CARE LITE FREE 2LT", "MHPX00000002", None, None, "Loyal", None, None),
         ],
     )
 

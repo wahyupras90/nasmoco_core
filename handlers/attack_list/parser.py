@@ -81,6 +81,16 @@ _STATUS_KEYWORDS = {
 
 _HISTORY_TRIGGER_WORDS = ("konversi", "histori", "history")
 
+# INT010 (extend PX): kata pemicu KHUSUS untuk fallback nama PX -- SENGAJA
+# hanya "konversi", TIDAK termasuk "histori"/"history". Ditemukan lewat
+# testing nyata (bukan asumsi): "history <nama PX>" ambigu dengan
+# HistoryServiceHandler/History TCARE (yang MEMANG berhak atas kata
+# "history"/"histori", priority sama di router -- tie-break menang
+# duluan karena registrasi lebih awal). "konversi" tidak overlap sama
+# sekali dengan domain manapun (dicek: tidak ada handler lain yang pakai
+# kata ini), jadi aman jadi satu-satunya pemicu untuk PX.
+_PX_HISTORY_TRIGGER_WORDS = ("konversi",)
+
 # INT010: kata "datang" saja terlalu generik (bisa soal WIP/servis lain di
 # luar domain attack list) -- HANYA dianggap trigger history kalau muncul
 # BERSAMA salah satu penanda domain attack list (source/program/kata
@@ -141,6 +151,14 @@ _DYNAMIC_SOURCE_IGNORE_WORDS = set(
         "dari", "untuk", "data", "yg", "yang", "di", "ke", "ada",
         "sa", "service", "advisor",  # PENAMBAHAN BUGFIX: Abaikan kata SA sebagai source
         "berapa", "datang", "sudah", "belum",  # INT010: trigger natural, bukan source
+        # BUGFIX (INT010 PX, ditemukan lewat test manual chatbot production):
+        # kata "program" sendiri (tanpa angka setelahnya, lolos dari
+        # _PROGRAM_ID_REGEX yang cuma hapus "program 11") tidak pernah
+        # ter-strip -- membuat "program Panggil Pulang At Risk" (nama CRM
+        # tanpa tanda hubung, gagal match whitelist VALID_PROGRAM) salah
+        # tertangkap sebagai source PX "program Panggil Pulang" (kata
+        # "program" ikut kebawa masuk).
+        "program",
     ]
 )
 
@@ -331,12 +349,13 @@ class AttackListParser(BaseParser):
             re.search(rf"\b{key}\b", t) for key in _SOURCE_MAP
         ):
             return True
-        # INT010 (extend): kata pemicu konversi/histori/history + nama
+        # INT010 (extend): kata pemicu KHUSUS "konversi" (bukan
+        # histori/history, lihat _PX_HISTORY_TRIGGER_WORDS) + nama
         # program PX custom (fallback SETELAH whitelist CRM & source
         # statis di atas tidak match) -- kata pemicu tetap WAJIB ada
         # (ADR028: nama PX sendirian, tanpa kata pemicu, TIDAK boleh
         # match, karena nama PX bebas/tidak whitelist seperti CRM).
-        if any(w in t for w in _HISTORY_TRIGGER_WORDS):
+        if any(w in t for w in _PX_HISTORY_TRIGGER_WORDS):
             px_source = _extract_dynamic_source(text)
             if px_source:
                 return True
@@ -391,13 +410,15 @@ class AttackListParser(BaseParser):
         #      langsung, ATAU kata "datang" + konteks domain -- keduanya
         #      dianggap niat history meski periode tidak eksplisit
         #      (default ke bulan berjalan, sama seperti expired_mode)
-        #   3. natural PX (extend): kata pemicu konversi/histori/history +
-        #      source ketemu via fallback PX dinamis (source SUDAH
-        #      dihitung di atas, whitelist CRM->statis->PX, urutan wajib
-        #      dikonfirmasi Room 0) -- kata pemicu tetap disyaratkan
-        #      (ADR028), nama PX sendirian tanpa itu TIDAK masuk sini.
+        #   3. natural PX (extend): kata pemicu KHUSUS "konversi" (BUKAN
+        #      histori/history -- itu domain History Service/History
+        #      TCARE, ditemukan bentrok lewat testing nyata) + source
+        #      ketemu via fallback PX dinamis (source SUDAH dihitung di
+        #      atas, whitelist CRM->statis->PX, urutan wajib dikonfirmasi
+        #      Room 0) -- kata pemicu tetap disyaratkan (ADR028), nama PX
+        #      sendirian tanpa itu TIDAK masuk sini.
         wants_history_px = (
-            any(w in t for w in _HISTORY_TRIGGER_WORDS)
+            any(w in t for w in _PX_HISTORY_TRIGGER_WORDS)
             and source is not None
             and source not in _SOURCE_MAP.values()
             and program is None
@@ -411,7 +432,21 @@ class AttackListParser(BaseParser):
         )
 
         if wants_history:
-            return AttackListParams(mode="history", source=source, program=program, period=period)
+            # BUGFIX (INT010, ditemukan lewat test manual production):
+            # sa_terakhir sebelumnya TIDAK disertakan di sini sama sekali
+            # -- kata "sa bdr" di query "konversi ... sa bdr" berhasil
+            # diekstrak (baris di atas) tapi DIBUANG diam-diam, filter SA
+            # tidak pernah diterapkan (silent failure). Sekarang
+            # disertakan -- KEPUTUSAN ROOM 0: untuk mode history, field
+            # ini dipetakan ke filter `sa_konversi` (SA yang closing
+            # transaksi riil), BUKAN `attack_list.sa_terakhir` (SA
+            # assignment attack list, konsep BEDA, dipakai mode list
+            # saja) -- pemetaan ke kolom yang benar terjadi di
+            # handler.py/service.py, bukan di sini.
+            return AttackListParams(
+                mode="history", source=source, program=program,
+                sa_terakhir=sa_terakhir, period=period,
+            )
 
         return AttackListParams(
             mode="list",

@@ -130,31 +130,28 @@ def test_attack_list_handler_history_mode(router):
 
 
 def test_attack_list_handler_history_dataframe_filtered_to_converted_only(router):
-    """KEPUTUSAN ROOM 0: kata "konversi" di query bukan cuma trigger mode
-    history -- juga berarti user cuma mau lihat yang SUDAH convert.
-    Dataframe yang dikembalikan (tampilan CLI & export Excel) HARUS
-    hanya berisi baris converted, TAPI summary (total_tercatat,
-    total_konversi) tetap dihitung dari SELURUH populasi yang match
-    filter (tidak ikut menyusut)."""
+    """KEPUTUSAN ROOM 0: dataframe yang DIKEMBALIKAN di mode history
+    difilter ke 'converted saja' (tgl_konversi IS NOT NULL), SETELAH
+    summary/total_tercatat/total_konversi dihitung dari populasi
+    LENGKAP (bukan populasi yang sudah dipersempit). Jumlah baris
+    dataframe HARUS SAMA PERSIS dengan angka total_konversi di summary,
+    BUKAN dengan total_tercatat."""
     result = router.route("attack list konversi bulan 2026-06")
-    # DoD: jumlah baris dataframe HARUS SAMA DENGAN total_konversi di
-    # summary (bukti filter benar, bukan asal potong angka lain).
     assert len(result.dataframe) == result.summary["total_konversi"] == 3
-    # Summary total_tercatat TIDAK ikut menyusut -- tetap populasi penuh (6).
-    assert result.summary["total_tercatat"] == 6
-    # Semua baris di dataframe yang tersisa harus punya tgl_konversi terisi.
+    assert result.summary["total_tercatat"] == 6  # populasi lengkap, TIDAK ikut menyusut
     assert result.dataframe["tgl_konversi"].notna().all()
 
 
-def test_attack_list_handler_list_mode_dataframe_not_filtered_by_converted(router):
-    """Regresi wajib (DoD Room 0): mode 'list' biasa (TANPA kata
-    konversi) TIDAK disentuh sama sekali -- tetap tampilkan SEMUA baris
-    (pending + converted), tidak ikut difilter ke converted-saja."""
+def test_attack_list_handler_list_mode_not_filtered_to_converted_only(router):
+    """Regresi wajib: mode 'list' (attack_list <source>, TANPA kata
+    konversi/histori/history) TIDAK disentuh oleh keputusan filter
+    converted-saja -- tetap tampilkan semua baris (pending + converted),
+    sesuai perilaku lama Room 6."""
     result = router.route("attack list tcare")
     assert result.summary["mode"] == "list"
-    # Mode list baca dari attack_list (current state), bukan history --
-    # pastikan tidak ada filter tgl_konversi yang ikut merembet ke sini.
-    assert "tgl_konversi" not in result.dataframe.columns or len(result.dataframe) >= 1
+    # Mode list pakai tabel attack_list (bukan attack_list_history),
+    # tidak ada kolom tgl_konversi -- dataframe tidak difilter sama sekali.
+    assert len(result.dataframe) >= 1
 
 
 # -- INT010: breakdown/filter per program CRM --
@@ -166,16 +163,10 @@ def test_int010_history_program_breakdown_dynamic(router):
     breakdown = result.summary["program_breakdown"]
     programs = {row["program"] for row in breakdown}
     assert programs == {"Panggil Pulang - At Risk", "Aktivasi New & Potential"}
-    # Panggil Pulang - At Risk: 2 baris (id=2 pending, id=3 converted) --
-    # breakdown TETAP dari populasi lengkap, tidak ikut menyusut oleh
-    # filter dataframe converted-saja (KEPUTUSAN ROOM 0).
+    # Panggil Pulang - At Risk: 2 baris (id=2 pending, id=3 converted)
     pp_at_risk = next(r for r in breakdown if r["program"] == "Panggil Pulang - At Risk")
     assert pp_at_risk["total"] == 2
     assert pp_at_risk["konversi"] == 1
-    # Dataframe yang dikembalikan HANYA berisi baris converted (3 total,
-    # gabungan semua source: 1 TCARE + 1 CRM Panggil Pulang + 1 PX).
-    assert len(result.dataframe) == 3
-    assert result.dataframe["tgl_konversi"].notna().all()
 
 
 def test_int010_history_filter_program_spesifik(router):
@@ -190,6 +181,63 @@ def test_int010_history_filter_program_spesifik(router):
     assert result.summary["filter_program"] == "Aktivasi New & Potential"
     assert result.summary["filter_source"] == "CRM"
     assert result.summary["total_tercatat"] == 1
+
+
+# -- INT010 (Keputusan Room 0): filter SA di mode history via sa_konversi --
+
+def test_int010_history_filter_sa_uses_sa_konversi_not_sa_terakhir(router):
+    """KEPUTUSAN ROOM 0: filter SA di mode history/konversi dipetakan ke
+    kolom `sa_konversi` (SA yang closing transaksi riil), BUKAN
+    `attack_list.sa_terakhir` (SA assignment attack list -- konsep BEDA,
+    dipakai mode list saja).
+
+    Fixture: id=1 (TCARE, converted) sa_konversi='AGN'; id=3 (CRM
+    Panggil Pulang - At Risk, converted) sa_konversi='ARIS'. Filter
+    'sa agn' HARUS hanya menangkap baris id=1, bukan campur dgn baris
+    lain yang kebetulan attack_list.sa_terakhir-nya AGN (jika ada)."""
+    result = router.route("attack list konversi bulan 2026-06 sa agn")
+    assert result.code == "INT008_OK"
+    assert result.summary["mode"] == "history"
+    assert result.summary["filter_sa"] == "AGN"
+    # DoD: summary HARUS menyempit ke SA yang diminta (BEDA dari filter
+    # "converted saja" yang summary tetap dari populasi lengkap) --
+    # hanya 1 baris (id=1) yang match sa_konversi='AGN'.
+    assert result.summary["total_tercatat"] == 1
+    assert result.summary["total_konversi"] == 1
+    assert len(result.dataframe) == 1
+    assert result.dataframe.iloc[0]["no_rangka"] == "MHTCARE0000001"
+
+
+def test_int010_history_filter_sa_different_sa_narrows_to_different_row(router):
+    """Filter SA lain (ARIS) menangkap baris berbeda (id=3, CRM), bukan
+    baris yang sama seperti filter AGN -- bukti filter benar-benar
+    membedakan per SA, bukan asal lolos semua."""
+    result = router.route("attack list konversi bulan 2026-06 sa aris")
+    assert result.summary["filter_sa"] == "ARIS"
+    assert result.summary["total_tercatat"] == 1
+    assert result.dataframe.iloc[0]["no_rangka"] == "MHCRM00000003"
+
+
+def test_int010_history_filter_sa_null_data_not_matched(router):
+    """DoD: baris dengan sa_konversi IS NULL (data lama belum
+    di-backfill evaluator ATAU belum convert) TIDAK match filter SA
+    apa pun -- diperlakukan sebagai "belum diketahui SA-nya", BUKAN
+    error/crash. Fixture: id=2, 4, 5, 6 semua sa_konversi=NULL -- tidak
+    ada satu pun yang muncul di hasil filter SA manapun."""
+    result = router.route("attack list konversi bulan 2026-06 sa agn")
+    no_rangka_hasil = set(result.dataframe["no_rangka"])
+    assert "MHCRM00000001" not in no_rangka_hasil  # id=2, sa_konversi NULL
+    assert "MHPX00000001" not in no_rangka_hasil   # id=5, sa_konversi NULL
+
+
+def test_int010_list_mode_sa_filter_unaffected_by_history_change(router):
+    """Regresi wajib (DoD Room 0): mode 'list' (attack_list <source> sa
+    <nama>) TIDAK berubah sama sekali -- tetap pakai
+    attack_list.sa_terakhir seperti sebelumnya, TIDAK ikut dipetakan ke
+    sa_konversi."""
+    result = router.route("attack list tcare sa agn")
+    assert result.summary["mode"] == "list"
+    assert result.summary["filter_sa"] == "AGN"
 
 
 def test_int010_natural_trigger_konversi_program_without_attack_list_keyword(router):

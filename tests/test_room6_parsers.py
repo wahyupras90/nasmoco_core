@@ -162,12 +162,38 @@ def test_int010_px_history_trigger_extracts_source_no_program():
     assert p.program is None
 
 
+def test_int010_history_mode_no_longer_drops_sa_terakhir():
+    """BUG DITEMUKAN & DIPERBAIKI (test manual chatbot production): sebelum
+    fix, sa_terakhir berhasil diekstrak (_extract_sa) tapi DIBUANG diam-diam
+    saat return AttackListParams(mode="history", ...) -- kata "sa bdr" di
+    query "konversi ... sa bdr" silently ignored, filter tidak pernah
+    diterapkan. Sekarang sa_terakhir disertakan untuk SEMUA mode."""
+    p = parser.parse("konversi T-CARE LITE FREE 2LT bulan juli sa bdr")
+    assert p.mode == "history"
+    assert p.sa_terakhir == "BDR"
+
+
 def test_int010_px_history_trigger_requires_trigger_word():
     """DoD #3 (ADR028): nama PX sendirian, TANPA kata pemicu apa pun,
     TIDAK boleh match -- beda dari whitelist CRM yang sudah pasti unik/
     terbatas, nama PX bebas sehingga wajib ada penanda niat eksplisit."""
     assert parser.match("T-CARE LITE FREE 2LT") is False
     assert parser.match("T-CARE LITE FREE 2LT bulan juli") is False
+
+
+def test_int010_px_history_trigger_word_is_konversi_only_not_history():
+    """BUG DITEMUKAN & DIPERBAIKI (test manual dengan chatbot production):
+    kata pemicu PX untuk mode history HARUS HANYA "konversi", BUKAN
+    "histori"/"history" -- sebelum fix, "history <nama PX> bulan juli"
+    match attack_list.match()==True, TAPI di router kalimat ini KALAH
+    tie-break dari HistoryServiceHandler (priority sama, registrasi
+    lebih dulu), sehingga query salah dijawab "data tidak ditemukan" oleh
+    domain yang salah alih-alih statistik konversi attack list. "konversi"
+    tidak overlap dengan handler manapun, aman jadi satu-satunya pemicu."""
+    assert parser.match("history T-CARE LITE FREE 2LT bulan juli") is False
+    assert parser.match("histori T-CARE LITE FREE 2LT bulan juli") is False
+    # "konversi" TETAP harus match (regresi negatif untuk fix ini)
+    assert parser.match("konversi T-CARE LITE FREE 2LT bulan juli") is True
 
 
 def test_int010_crm_whitelist_wins_over_px_fallback_same_trigger_word():
@@ -186,6 +212,27 @@ def test_int010_px_name_not_matching_whitelist_falls_back_correctly():
     p = parser.parse("konversi Percepat bulan juli")
     assert p.program is None
     assert p.source == "Percepat"
+
+
+def test_int010_word_program_not_leaked_into_px_source():
+    """BUG DITEMUKAN & DIPERBAIKI (test manual dengan chatbot production):
+    kata "program" (tanpa angka setelahnya, TIDAK match
+    _PROGRAM_ID_REGEX yang cuma menghapus pola "program 11") sebelumnya
+    tidak pernah masuk _DYNAMIC_SOURCE_IGNORE_WORDS, sehingga kalau nama
+    program CRM ditulis TANPA tanda hubung ("Panggil Pulang At Risk",
+    bukan "Panggil Pulang - At Risk") -- gagal match whitelist
+    VALID_PROGRAM (exact match), fallback ke ekstraksi PX, dan kata
+    "program" ikut kebawa masuk jadi bagian source
+    ("program Panggil Pulang", bukan "Panggil Pulang" saja). Diperbaiki
+    dengan menambahkan "program" ke _DYNAMIC_SOURCE_IGNORE_WORDS."""
+    p = parser.parse("konversi program Panggil Pulang At Risk bulan juli")
+    assert p.source == "Panggil Pulang"
+    assert "program" not in p.source.lower()
+    # Regresi negatif: program_id literal ("program 11") tetap harus
+    # berfungsi seperti biasa, tidak terganggu oleh fix ini.
+    p2 = parser.parse("attack list program 11")
+    assert p2.program_id == 11
+    assert p2.source is None
 
 
 def test_int010_px_list_mode_unaffected_by_history_trigger_extension():

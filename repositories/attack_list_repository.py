@@ -224,6 +224,7 @@ class AttackListRepository(BaseRepository):
         bulan: str,
         source: Optional[str] = None,
         program: Optional[str] = None,
+        sa: Optional[str] = None,
     ) -> pd.DataFrame:
         """Baca attack_list_history untuk statistik konversi per bulan.
 
@@ -231,12 +232,24 @@ class AttackListRepository(BaseRepository):
         sudah konversi' -- HANYA baca kolom status yang sudah dihitung
         evaluator_konversi.py, tidak menghitung ulang (BR026).
 
-        `program` (INT010): filter granular untuk breakdown per program
-        CRM (P1-P4). Kolom `program` di attack_list_history NULL untuk
-        source TCARE/CR7/PX (tidak granular by design, dikonfirmasi Room 0)
-        -- filter ini hanya bermakna kalau dikombinasikan dengan
-        source="CRM" atau dibiarkan tanpa source sekaligus sebut nama
-        program (nama program CRM unik, tidak overlap TCARE/CR7/PX).
+        `program` (INT010): filter granular per program/kategori. KOREKSI
+        (ditemukan lewat test manual production): kolom `program` di
+        attack_list_history TIDAK selalu NULL di luar CRM -- untuk CR7
+        misalnya berisi nama pekerjaan, bukan NULL (label breakdown tetap
+        generik "per program" apa pun sumbernya, sesuai keputusan Wahyu).
+        Filter ini bermakna untuk source mana pun yang kolom `program`-nya
+        terisi, tidak terbatas ke CRM saja.
+
+        `sa` (INT010, keputusan Room 0): filter berdasarkan kolom
+        `sa_konversi` -- SA yang BENAR-BENAR menangani transaksi servis
+        riil saat unit itu convert (diambil evaluator_konversi.py dari
+        unitmasuk pada kunjungan/WO TERAKHIR dalam window evaluasi),
+        BUKAN `attack_list.sa_terakhir` (SA assignment attack list, beda
+        konsep, dipakai mode `list`, TIDAK disentuh di sini). Baris dengan
+        `sa_konversi IS NULL` (data lama belum sempat di-backfill
+        evaluator, ATAU unit belum convert sama sekali) TIDAK match
+        filter SA apa pun -- diperlakukan sebagai "belum diketahui
+        SA-nya", bukan error.
         """
         conditions = ["bulan = ?"]
         params: list = [bulan]
@@ -248,6 +261,10 @@ class AttackListRepository(BaseRepository):
         if program is not None:
             conditions.append("program = ?")
             params.append(program)
+
+        if sa is not None:
+            conditions.append("sa_konversi = ?")
+            params.append(sa)
 
         sql = f"""
             SELECT *

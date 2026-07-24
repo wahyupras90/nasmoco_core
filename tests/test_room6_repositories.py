@@ -94,6 +94,24 @@ def test_attack_list_find_history_combines_source_and_program(db_path):
     assert df.iloc[0]["no_rangka"] == "MHCRM00000004"
 
 
+def test_attack_list_find_history_filters_by_sa_konversi(db_path):
+    """KEPUTUSAN ROOM 0: filter `sa` di find_history() memakai kolom
+    `sa_konversi` (SA closing transaksi riil), BUKAN attack_list.sa_terakhir.
+    Fixture: id=1 (TCARE) sa_konversi='AGN'."""
+    repo = AttackListRepository(db_path)
+    df = repo.find_history(bulan="2026-06", sa="AGN")
+    assert len(df) == 1
+    assert df.iloc[0]["no_rangka"] == "MHTCARE0000001"
+
+
+def test_attack_list_find_history_sa_null_rows_not_matched(db_path):
+    """DoD: baris sa_konversi IS NULL (data lama belum di-backfill/belum
+    convert) TIDAK match filter sa apa pun -- bukan error."""
+    repo = AttackListRepository(db_path)
+    df = repo.find_history(bulan="2026-06", sa="AGN")
+    assert "MHCRM00000001" not in df["no_rangka"].values  # id=2, sa_konversi NULL
+
+
 def test_attack_list_find_expired_mode_filters_by_batas_tcare_month(db_path):
     """expired_mode: filter berbasis strftime batas_tcare, BUKAN status --
     meniru logic tools/attack_list.py legacy (dikonfirmasi Wahyu)."""

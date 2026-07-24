@@ -12,6 +12,7 @@ def build_summary(result: dict) -> dict:
             "periode_diasumsikan": not result["period_is_explicit"],
             "filter_source": result.get("source_filter"),
             "filter_program": result.get("program_filter"),
+            "filter_sa": result.get("sa_filter"),
             "total_tercatat": result["total_tercatat"],
             "total_konversi": result["total_konversi"],
             "program_breakdown": result.get("program_breakdown", []),
@@ -75,6 +76,8 @@ def format_message(result: dict) -> str:
             lines.append(f"Filter source: {result['source_filter']}")
         if result.get("program_filter"):
             lines.append(f"Filter program: {result['program_filter']}")
+        if result.get("sa_filter"):
+            lines.append(f"Filter SA (konversi): {result['sa_filter']}")
         # INT010: breakdown per program CRM (dinamis, DISTINCT dari data)
         program_breakdown = result.get("program_breakdown") or []
         if program_breakdown:

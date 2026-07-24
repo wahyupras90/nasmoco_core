@@ -261,23 +261,35 @@ class AttackListService(BaseService):
         # ("Panggil Pulang - At Risk"). Tanpa .title() filter tidak akan
         # pernah match (ditemukan lewat test, bukan asumsi).
         safe_program = params.program.title() if params.program else None
+
+        # KEPUTUSAN ROOM 0 (filter SA di mode history): sa_terakhir di sini
+        # dipetakan ke kolom `sa_konversi` -- SA yang BENAR-BENAR menangani
+        # transaksi servis riil saat unit convert (diisi evaluator_konversi.py
+        # dari unitmasuk pada WO TERAKHIR dalam window evaluasi), BUKAN
+        # `attack_list.sa_terakhir` (SA assignment attack list, konsep BEDA,
+        # cuma dipakai mode "list"). Sama pola .title() dengan program/segment
+        # -- whitelist VALID_SA disimpan uppercase, konsisten dengan data
+        # (tidak perlu .title(), sa_konversi diasumsikan tersimpan uppercase
+        # sama seperti attack_list.sa_terakhir -- lihat catatan test).
+        safe_sa = params.sa_terakhir
+
         history_df = self.repo.find_history(
             bulan=bulan_str, source=params.source, program=safe_program,
+            sa=safe_sa,
         )
-
-        total_konversi = 0
-        if not history_df.empty and "tgl_konversi" in history_df.columns:
-            total_konversi = int(history_df["tgl_konversi"].notna().sum())
 
         # INT010: breakdown per "program" -- generik per kolom `program`
         # apa adanya (bisa berisi nama program CRM, nama pekerjaan CR7,
         # dst -- KOREKSI dari asumsi awal "NULL selain CRM", ditemukan
         # lewat test manual production bahwa CR7 juga terisi). Dihitung
-        # dari history_df LENGKAP (SEBELUM difilter converted-saja di
-        # bawah), supaya breakdown & summary tetap merepresentasikan
-        # seluruh populasi yang match filter, bukan cuma subset yang
-        # ditampilkan. Dinamis dari DISTINCT data, TIDAK hardcode daftar
-        # tetap (pelajaran dari bug PX mode "Semua").
+        # dari history_df LENGKAP-SETELAH-FILTER-SA (filter SA memang
+        # MEMPERSEMPIT populasi yang dihitung -- KEPUTUSAN ROOM 0, beda
+        # dari filter program/source yang murni penyaringan tampilan).
+        # Dinamis dari DISTINCT data, TIDAK hardcode daftar tetap.
+        total_konversi = 0
+        if not history_df.empty and "tgl_konversi" in history_df.columns:
+            total_konversi = int(history_df["tgl_konversi"].notna().sum())
+
         program_breakdown = []
         if not history_df.empty and "program" in history_df.columns:
             crm_history_df = history_df[history_df["program"].notna()]
@@ -293,12 +305,12 @@ class AttackListService(BaseService):
         # KEPUTUSAN ROOM 0 (mode history vs mode list): kata "konversi"
         # di query BUKAN cuma trigger masuk mode history -- juga berarti
         # user cuma mau LIHAT yang sudah convert, bukan seluruh populasi
-        # yang match filter source/program/periode. Jadi dataframe yang
+        # yang match filter source/program/periode/SA. Jadi dataframe yang
         # DIKEMBALIKAN (untuk tampilan CLI & export Excel) difilter ke
         # "converted saja" DI SINI, SETELAH summary/breakdown di atas
-        # selesai dihitung dari data lengkap -- urutan ini wajib, supaya
-        # total_tercatat/total_konversi/program_breakdown TIDAK ikut
-        # menyusut gara-gara dataframe sudah difilter duluan.
+        # selesai dihitung -- urutan wajib, supaya total_tercatat/
+        # total_konversi/program_breakdown TIDAK ikut menyusut gara-gara
+        # dataframe sudah difilter duluan.
         #
         # Mode "list" (attack_list <source>, _execute_list()) TIDAK
         # disentuh sama sekali -- tetap tampilkan semua baris (pending +
@@ -316,6 +328,7 @@ class AttackListService(BaseService):
             "period_is_explicit": params.period.is_explicit,
             "source_filter": params.source,
             "program_filter": safe_program,
+            "sa_filter": safe_sa,
             "history": converted_df,
             "total_tercatat": int(len(history_df)),
             "total_konversi": total_konversi,
